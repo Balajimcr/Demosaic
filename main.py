@@ -1,21 +1,16 @@
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
+from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.color import rgb2lab
+import pandas as pd
+from tabulate import tabulate
+import os
+from tabulate import tabulate
+from tqdm import tqdm
 
-from methods import Bilinear, HQL, HA
-from methods import GBTF, DLMMSE
-from methods import RI, IRI, MLRI
-
-def metrics(raw_img, new_img):
-    result = []
-    for c in range(0, 3):
-        mse = np.mean(np.power((raw_img[5:-5, 5:-5, c] - new_img[5:-5, 5:-5, c]), 2))
-        if mse == 0:
-            result.append('perfect!!')
-        else:
-            result.append(10 * np.log10(255*255/mse))
-
-    return result
+from methods import Bilinear, HQL, HA, GBTF, RI, DLMMSE, IRI
 
 def make_bayer(img):
     new_img = np.zeros_like(img)
@@ -27,41 +22,84 @@ def make_bayer(img):
 
     return new_img
 
+def metrics(raw_img, new_img):
+    result = {}
+    
+    # PSNR for each channel and overall
+    for c in range(3):
+        result[f'PSNR_channel_{c}'] = psnr(raw_img[5:-5, 5:-5, c], new_img[5:-5, 5:-5, c])
+    result['PSNR_overall'] = psnr(raw_img[5:-5, 5:-5], new_img[5:-5, 5:-5])
+    
+    # SSIM for each channel and overall
+    for c in range(3):
+        result[f'SSIM_channel_{c}'] = ssim(raw_img[5:-5, 5:-5, c], new_img[5:-5, 5:-5, c], data_range=255)
+    
+    # Calculate SSIM for overall image
+    result['SSIM_overall'] = ssim(raw_img[5:-5, 5:-5], new_img[5:-5, 5:-5], data_range=255, channel_axis=2)
+    
+    # Color accuracy in LAB color space
+    lab_raw = rgb2lab(raw_img[5:-5, 5:-5])
+    lab_new = rgb2lab(new_img[5:-5, 5:-5])
+    result['Color_MSE'] = np.mean(np.sum((lab_raw - lab_new)**2, axis=2))
+    
+    # Edge preservation
+    raw_edges = cv2.Canny(cv2.cvtColor(raw_img, cv2.COLOR_RGB2GRAY), 100, 200)
+    new_edges = cv2.Canny(cv2.cvtColor(new_img, cv2.COLOR_RGB2GRAY), 100, 200)
+    result['Edge_preservation'] = np.sum(raw_edges & new_edges) / np.sum(raw_edges | new_edges)
+    
+    # Zipper effect detection
+    gray_new = cv2.cvtColor(new_img, cv2.COLOR_RGB2GRAY)
+    laplacian = cv2.Laplacian(gray_new, cv2.CV_64F)
+    result['Zipper_effect'] = np.std(laplacian)
+    
+    return result
+
+# Create a directory to store output images
+os.makedirs("Data", exist_ok=True)
+
+results_data = []
+
 for picname in ['./kodim19.png']:
+    print(f"Processing image: {picname}")
     src_img = cv2.imread(picname)
     src_img = cv2.cvtColor(src_img, cv2.COLOR_BGR2RGB)
 
     bayer_img = make_bayer(src_img)
-    plt.imshow(bayer_img), plt.show()
+    cv2.imwrite("Data/Bayer.png", cv2.cvtColor(bayer_img, cv2.COLOR_RGB2BGR))
 
-    bilinear_img = Bilinear.run(bayer_img)
-    plt.imshow(bilinear_img), plt.show()
-    print('Bilinear: ', metrics(src_img, bilinear_img))
+    methods = [
+        ('Bilinear', Bilinear.run),
+        ('HQL', HQL.run),
+        ('HA', HA.run),
+        ('DLMMSE', DLMMSE.run),
+        ('GBTF', GBTF.run),
+        ('RI', RI.run),
+        ('IRI', IRI.run)
+    ]
 
-    hql_img = HQL.run(bayer_img)
-    plt.imshow(hql_img), plt.show()
-    print('HQL: ', metrics(src_img, hql_img))
+    for method, func in tqdm(methods, desc="Processing algorithms"):
+        print(f"\nRunning {method} algorithm...")
+        demosaiced_img = func(bayer_img)
+        cv2.imwrite(f"Data/{method}.png", cv2.cvtColor(demosaiced_img, cv2.COLOR_RGB2BGR))
+        
+        results = metrics(src_img, demosaiced_img)
+        results['Method'] = method
+        results_data.append(results)
+        print(f"{method} algorithm completed.")
 
-    ha_img = HA.run(bayer_img)
-    plt.imshow(ha_img), plt.show()
-    print('HA: ', metrics(src_img, ha_img))
+# Create a DataFrame from the results
+df = pd.DataFrame(results_data)
 
-    dlmmse_img = DLMMSE.run(bayer_img)
-    plt.imshow(dlmmse_img), plt.show()
-    print('DLMMSE: ', metrics(src_img, dlmmse_img))
+# Reorder columns to have 'Method' first
+columns = ['Method'] + [col for col in df.columns if col != 'Method']
+df = df[columns]
 
-    gbtf_img = GBTF.run(bayer_img)
-    plt.imshow(gbtf_img), plt.show()
-    print('GBTF: ', metrics(src_img, gbtf_img))
+# Print the table
+print("\nResults Table:")
+print(tabulate(df, headers='keys', tablefmt='grid', floatfmt='.4f'))
 
-    ri_img = RI.run(bayer_img)
-    plt.imshow(ri_img), plt.show()
-    print('RI: ', metrics(src_img, ri_img))
+# Export to CSV
+df.to_csv('demosaicing_results.csv', index=False)
 
-    mlri_img = MLRI.run(bayer_img)
-    plt.imshow(mlri_img), plt.show()
-    print('MLRI: ', metrics(src_img, mlri_img))
-
-    iri_img = IRI.run(bayer_img)
-    plt.imshow(iri_img), plt.show()
-    print('IRI: ', metrics(src_img, iri_img))
+print("\nResults have been exported to 'demosaicing_results.csv'")
+print("Output images have been saved in the 'Data' directory")
