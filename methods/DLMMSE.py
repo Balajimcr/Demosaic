@@ -16,7 +16,7 @@ def save_image(image, filename):
         filename: The base filename for both image and CSV files.
     """
 
-    foldername = os.path.join("Data/")
+    foldername = os.path.join("Data/DLMMSE/")
     os.makedirs(foldername, exist_ok=True)  # Create the folder if it doesn't exist
 
     # Save the image
