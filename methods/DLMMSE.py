@@ -110,6 +110,14 @@ def create_bayer_masks(height, width, pattern):
 
 def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
     """Interpolate the G channel at R and B positions."""
+    import numpy as np
+    from scipy.ndimage import convolve1d
+    
+    # Define necessary kernels if they're not defined elsewhere
+    KERNEL_1D_HV = np.array([1/2, 0, 1/2])
+    GAUSSIAN_FILTER_1D = np.array([1/4, 1/2, 1/4])
+    MEAN_FILTER_1D = np.array([1/3, 1/3, 1/3])
+    
     R, G, B = new_img[:, :, 0], new_img[:, :, 1], new_img[:, :, 2]
     S = R + G + B  # Sum of channels (sparse at initial stage)
     
@@ -118,8 +126,9 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         save(S, "1.0_S_sum_of_channels")
     
     # 1.1: Directional interpolation (horizontal and vertical)
-    H = convolve1d(S, KERNEL_1D_HV, axis=1)  # Horizontal
-    V = convolve1d(S, KERNEL_1D_HV, axis=0)  # Vertical
+    # Using direct scipy convolve1d instead of custom function to match the original intent
+    H = convolve1d(S, KERNEL_1D_HV, axis=1, mode='reflect')  # Horizontal
+    V = convolve1d(S, KERNEL_1D_HV, axis=0, mode='reflect')  # Vertical
     
     if debug_info:
         pattern, save = debug_info
@@ -147,8 +156,8 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         save(delta_V, "1.1_delta_V_after_sign_flip")
     
     # 1.2: Apply Gaussian filtering to deltas
-    gaussian_H = convolve1d(delta_H, GAUSSIAN_FILTER_1D, axis=1)
-    gaussian_V = convolve1d(delta_V, GAUSSIAN_FILTER_1D, axis=0)
+    gaussian_H = convolve1d(delta_H, GAUSSIAN_FILTER_1D, axis=1, mode='reflect')
+    gaussian_V = convolve1d(delta_V, GAUSSIAN_FILTER_1D, axis=0, mode='reflect')
     
     if debug_info:
         pattern, save = debug_info
@@ -156,16 +165,16 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         save(gaussian_V, "1.2_gaussian_smoothed_delta_V")
     
     # 1.3: Calculate statistics (mean and variance)
-    mean_H = convolve1d(gaussian_H, MEAN_FILTER_1D, axis=1)
-    mean_V = convolve1d(gaussian_V, MEAN_FILTER_1D, axis=0)
+    mean_H = convolve1d(gaussian_H, MEAN_FILTER_1D, axis=1, mode='reflect')
+    mean_V = convolve1d(gaussian_V, MEAN_FILTER_1D, axis=0, mode='reflect')
     
     # Calculate variances (adding small epsilon to avoid division by zero)
     epsilon = 1e-10
-    var_value_H = convolve1d(np.square(gaussian_H - mean_H), MEAN_FILTER_1D, axis=1) + epsilon
-    var_value_V = convolve1d(np.square(gaussian_V - mean_V), MEAN_FILTER_1D, axis=0) + epsilon
+    var_value_H = convolve1d(np.square(gaussian_H - mean_H), MEAN_FILTER_1D, axis=1, mode='reflect') + epsilon
+    var_value_V = convolve1d(np.square(gaussian_V - mean_V), MEAN_FILTER_1D, axis=0, mode='reflect') + epsilon
     
-    var_noise_H = convolve1d(np.square(delta_H - gaussian_H), MEAN_FILTER_1D, axis=1) + epsilon
-    var_noise_V = convolve1d(np.square(delta_V - gaussian_V), MEAN_FILTER_1D, axis=0) + epsilon
+    var_noise_H = convolve1d(np.square(delta_H - gaussian_H), MEAN_FILTER_1D, axis=1, mode='reflect') + epsilon
+    var_noise_V = convolve1d(np.square(delta_V - gaussian_V), MEAN_FILTER_1D, axis=0, mode='reflect') + epsilon
     
     if debug_info:
         pattern, save = debug_info
