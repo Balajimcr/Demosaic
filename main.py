@@ -10,12 +10,14 @@ from tqdm import tqdm
 import concurrent.futures
 from functools import partial
 
-from methods import DLMMSE
+from methods import DLMMSE,DLMMSE1
 
 # --- Global constants ---
 DATA_ROOT = "Data"
 INPUT_DIR = os.path.join(DATA_ROOT, "input")
 OUTPUT_DIR = os.path.join(DATA_ROOT, "output")
+OUTPUT_DIR_ALGO1 = os.path.join(DATA_ROOT, "DLMMSE")
+OUTPUT_DIR_ALGO2 = os.path.join(DATA_ROOT, "DLMMSE1")
 # DLMMSE_DIR and DLMMSE1_DIR might not be needed if the method handles its own debug output
 # DEBUG_METHOD_DIR = os.path.join(DATA_ROOT, "DLMMSE_Debug") # Example if needed
 
@@ -23,7 +25,7 @@ OUTPUT_DIR = os.path.join(DATA_ROOT, "output")
 def create_directories():
     """Create necessary directories for data storage."""
     # Ensure Data, input, and general output directories exist
-    dirs = [DATA_ROOT, INPUT_DIR, OUTPUT_DIR]
+    dirs = [DATA_ROOT, INPUT_DIR, OUTPUT_DIR,OUTPUT_DIR_ALGO1,OUTPUT_DIR_ALGO2]
     # Add specific method debug directories if needed by the main script
     # dirs.append(DEBUG_METHOD_DIR)
     for d in dirs:
@@ -382,7 +384,8 @@ def process_images(patterns=None, parallel=True, max_workers=None):
     # --- Define the demosaicing methods to test ---
     # Each entry is a tuple: ('Method Name for Reports', method_run_function)
     methods_to_run = [
-        ('DLMMSE', DLMMSE.run)        
+        ('DLMMSE', DLMMSE.run),
+        ('DLMMSE1', DLMMSE1.run)        
     ]
     print(f"Using methods: {[name for name, func in methods_to_run]}")
 
