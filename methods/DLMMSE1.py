@@ -372,3 +372,82 @@ def run(img, pattern='RGGB'):
         save_debug_image(final_demosaiced_img, "3.0_Final_Demosaiced_Image")
     
     return final_demosaiced_img
+
+def test():
+    """
+    Runs a self-contained test of the DLMMSE demosaicing algorithm
+    using a specific pre-saved Bayer image file.
+    Saves the demosaiced output to a dedicated test directory.
+    """
+    print("Starting self-test for DLMMSE with pre-saved image...")
+    
+    # Define the path to the pre-saved Bayer image
+    input_image_path = os.path.join("Data", "DLMMSE1", "RGGB_0.0_input_bayer_img.png")
+    test_pattern = 'RGGB'
+    
+    print(f"Attempting to load Bayer image from: {input_image_path}")
+    
+    try:
+        # Load the image using cv2 (loads as BGR uint8 by default)
+        img_bgr_uint8 = cv2.imread(input_image_path)
+        if img_bgr_uint8 is None:
+            raise FileNotFoundError(f"Image file not found or failed to load: {input_image_path}")
+        
+        # Convert BGR to RGB. The run function and masks assume RGB channel order (R=0, G=1, B=2)
+        img_rgb_uint8 = cv2.cvtColor(img_bgr_uint8, cv2.COLOR_BGR2RGB)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        print("Please ensure the required input Bayer image exists at the correct path.")
+        return  # Exit if file loading fails
+    except Exception as e:
+        print(f"An error occurred during image loading: {e}")
+        import traceback
+        traceback.print_exc()
+        return  # Exit on other loading errors
+    
+    # Set a specific filename prefix for debug output during this test run
+    global FileName_DLMMSE
+    original_filename_prefix = FileName_DLMMSE  # Store original
+    
+    # Use a prefix based on the loaded input filename for clarity
+    FileName_DLMMSE = f"test_loaded_{os.path.splitext(os.path.basename(input_image_path))[0]}"
+    
+    # Define test output directory, separate from general debug steps
+    test_output_dir = os.path.join("Data", "DLMMSE1", "test_output_loaded")
+    os.makedirs(test_output_dir, exist_ok=True)
+    
+    print(f"Saving test results to: {test_output_dir}")
+    
+    # Run the demosaicing algorithm
+    print(f"Running DLMMSE algorithm on loaded image (pattern: {test_pattern})...")
+    
+    try:
+        # Pass the loaded uint8 RGB image to the run function
+        # The run function handles the conversion to float internally
+        demosaiced_img = run(img_rgb_uint8, pattern=test_pattern)
+        
+        # Save the demosaiced output image
+        base_input_filename = os.path.basename(input_image_path)
+        demosaiced_output_filename = f"demosaiced_output_of_{base_input_filename}"
+        demosaiced_output_path = os.path.join(test_output_dir, demosaiced_output_filename)
+        
+        print(f"Saving demosaiced output to {demosaiced_output_path}")
+        
+        # The run function returns a uint8 image, ready to save
+        imageio.imwrite(demosaiced_output_path, demosaiced_img)
+    except Exception as e:
+        print(f"An error occurred during the DLMMSE test run: {e}")
+        import traceback
+        traceback.print_exc()  # Print traceback for debugging
+    finally:
+        # Always restore the original filename prefix
+        FileName_DLMMSE = original_filename_prefix
+    
+    print("Self-test for DLMMSE with pre-saved image finished.")
+    print(f"Check '{test_output_dir}' for the demosaiced output image.")
+    
+    if debug_mode:
+        print(f"Check 'Data/DLMMSE1' for intermediate debug images (if enabled).")
+
+if __name__ == "__main__":
+    test()

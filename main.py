@@ -73,10 +73,8 @@ def clear_output_directories(verbose=False):
 
     # Clear general output and specific method debug dirs if defined
     dirs_to_clear = [OUTPUT_DIR]
-    # Add other dirs like DEBUG_METHOD_DIR if needed
-    # Also clear the DLMMSE debug dir created by the method itself
-    dirs_to_clear.append(os.path.join(DATA_ROOT, "DLMMSE_Debug"))
-
+    dirs_to_clear += [OUTPUT_DIR_ALGO1, OUTPUT_DIR_ALGO2] # Add specific method directories
+    
     for dir_path in dirs_to_clear:
          if os.path.exists(dir_path):
             if verbose: print(f"Clearing: {dir_path}")
