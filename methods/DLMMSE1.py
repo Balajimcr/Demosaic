@@ -4,7 +4,7 @@ from scipy.ndimage import convolve1d
 import os
 import imageio
 import cv2
-from Utils import create_bayer_masks, update_filename, save_image, load_image
+from methods.Utils import create_bayer_masks, update_filename, save_image, load_image
 
 # Global configurations
 debug_mode = True
@@ -268,7 +268,7 @@ def test():
     
     FileName_DLMMSE = f"test_loaded_{os.path.splitext(os.path.basename(input_image_path))[0]}"
     
-    test_output_dir = os.path.join("Data", "DLMMSE1", "test_output_loaded")
+    test_output_dir = os.path.join("Data", "DLMMSE1")
     os.makedirs(test_output_dir, exist_ok=True)
     
     print(f"Saving test results to: {test_output_dir}")
