@@ -6,6 +6,11 @@ from skimage.metrics import structural_similarity as ssim, peak_signal_noise_rat
 from skimage.color import rgb2lab
 import warnings
 import imageio
+import numpy as np # Ensure numpy is imported as np
+import cv2
+import warnings
+
+
 
 debug_mode = True
 # Bayer pattern slicing dictionary - defined once for all supported patterns
@@ -95,103 +100,213 @@ def make_bayer(img, pattern='RGGB'):
         new_img[row_offset::2, col_offset::2, channel_index] = img[row_offset::2, col_offset::2, channel_index]
     return new_img
 
-def calculate_metrics(raw_img_input: 'numpy.ndarray', new_img_input: 'numpy.ndarray') -> dict:
+
+
+def calculate_metrics(raw_img_input: np.ndarray, new_img_input: np.ndarray) -> dict:
     """
-    Calculates various image quality metrics between a raw and a new image.
+    Calculates various image quality metrics between a raw (ground truth) and a new (demosaiced) image.
+
+    Args:
+        raw_img_input (np.ndarray): The ground truth image (H, W, C). Expected to be RGB.
+        new_img_input (np.ndarray): The demosaiced image (H, W, C). Expected to be RGB.
+
+    Returns:
+        dict: A dictionary containing the calculated metrics.
     """
     DEFAULT_CROP_SIZE = 5
     CANNY_LOW_THRESHOLD = 100
     CANNY_HIGH_THRESHOLD = 200
-    DATA_RANGE = 255
+    DATA_RANGE = 255 # Assuming 8-bit images
+
+    # Parameters for CNR calculation
+    CNR_VAR_WINDOW_SIZE = 7 # Window size for local variance calculation to find smooth areas
+    CNR_VAR_THRESHOLD = 10.0 # Variance threshold to consider a region smooth
+
 
     raw_img = np.copy(raw_img_input)
     new_img = np.copy(new_img_input)
     crop_size = DEFAULT_CROP_SIZE
 
+    # --- Input Validation and Adaptation ---
     if raw_img.shape[:2] != new_img.shape[:2]:
-        raise ValueError(f"Input images must have same height/width. Got {raw_img.shape} and {new_img.shape}")
-    if raw_img.ndim != 3 or new_img.ndim != 3 or raw_img.shape[2] != 3 or new_img.shape[2] != 3:
-        if raw_img.ndim == 2 and new_img.ndim == 2:
-            warnings.warn("Grayscale images detected. Adapting for metrics.", UserWarning)
-            raw_img = cv2.cvtColor(raw_img, cv2.COLOR_GRAY2RGB)
-            new_img = cv2.cvtColor(new_img, cv2.COLOR_GRAY2RGB)
-        else:
-            warnings.warn(f"Expected RGB images (H, W, 3), got {raw_img.shape} and {new_img.shape}.", UserWarning)
+        raise ValueError(f"Input images must have same height/width. Got {raw_img.shape[:2]} and {new_img.shape[:2]}")
+
+    # Convert grayscale inputs to RGB if necessary for consistent processing
+    if raw_img.ndim == 2:
+        raw_img = cv2.cvtColor(raw_img, cv2.COLOR_GRAY2RGB)
+    elif raw_img.ndim == 3 and raw_img.shape[2] == 1:
+         raw_img = cv2.cvtColor(raw_img.squeeze(), cv2.COLOR_GRAY2RGB)
+    elif raw_img.ndim != 3 or raw_img.shape[2] != 3:
+         warnings.warn(f"Unexpected format for raw_img (expected H, W or H, W, 1 or H, W, 3), got {raw_img.shape}. Attempting to process as is if 3 channels.", UserWarning)
+
+    if new_img.ndim == 2:
+        new_img = cv2.cvtColor(new_img, cv2.COLOR_GRAY2RGB)
+    elif new_img.ndim == 3 and new_img.shape[2] == 1:
+         new_img = cv2.cvtColor(new_img.squeeze(), cv2.COLOR_GRAY2RGB)
+    elif new_img.ndim != 3 or new_img.shape[2] != 3:
+         warnings.warn(f"Unexpected format for new_img (expected H, W or H, W, 1 or H, W, 3), got {new_img.shape}. Attempting to process as is if 3 channels.", UserWarning)
+
+    # Ensure both images are treated as color for subsequent steps if they have 3 channels
+    is_color = raw_img.ndim == 3 and raw_img.shape[2] == 3 and new_img.ndim == 3 and new_img.shape[2] == 3
+
 
     results = {}
     h, w = raw_img.shape[:2]
 
+    # --- Cropping ---
     if h <= 2 * crop_size or w <= 2 * crop_size:
-        warnings.warn(f"Image too small for cropping. Using full image.", UserWarning)
+        warnings.warn(f"Image size ({h}x{w}) too small for {DEFAULT_CROP_SIZE} cropping. Using full image.", UserWarning)
         crop_raw = raw_img
         crop_new = new_img
     else:
         crop_raw = raw_img[crop_size:-crop_size, crop_size:-crop_size]
         crop_new = new_img[crop_size:-crop_size, crop_size:-crop_size]
 
-    channel_names = ['R', 'G', 'B'] if crop_raw.shape[2] == 3 else ['Gray']
+    # Ensure cropped images are still color if originals were
+    is_color_cropped = crop_raw.ndim == 3 and crop_raw.shape[2] == 3 and crop_new.ndim == 3 and crop_new.shape[2] == 3
+
+
+    # --- PSNR and SSIM per Channel ---
+    # Handle potential grayscale after cropping if input wasn't color
+    channel_names = ['B', 'G', 'R'] if is_color_cropped else ['Gray'] # OpenCV uses BGR order
     for c, name in enumerate(channel_names):
+        # Select channel safely based on dimension
         raw_channel = crop_raw[..., c] if crop_raw.ndim == 3 else crop_raw
         new_channel = crop_new[..., c] if crop_new.ndim == 3 else crop_new
+
         try:
+            # Ensure data types are float for metrics like SSIM if necessary,
+            # although data_range helps. psnr/ssim functions usually handle uint8.
             results[f'PSNR_{name}'] = psnr(raw_channel, new_channel, data_range=DATA_RANGE)
         except Exception as e:
             warnings.warn(f"PSNR_{name} failed: {e}", RuntimeWarning)
             results[f'PSNR_{name}'] = np.nan
+
         try:
             results[f'SSIM_{name}'] = ssim(raw_channel, new_channel, data_range=DATA_RANGE)
         except Exception as e:
             warnings.warn(f"SSIM_{name} failed: {e}", RuntimeWarning)
             results[f'SSIM_{name}'] = np.nan
-        if crop_raw.ndim == 2:
-            break
 
+        if not is_color_cropped: # Only one channel if not color
+             break
+
+    # --- Overall PSNR and SSIM ---
     try:
         results['PSNR_Overall'] = psnr(crop_raw, crop_new, data_range=DATA_RANGE)
     except Exception as e:
         warnings.warn(f"PSNR_Overall failed: {e}", RuntimeWarning)
         results['PSNR_Overall'] = np.nan
 
-    is_multichannel = crop_raw.ndim == 3 and crop_raw.shape[2] > 1
     try:
-        if is_multichannel:
-            try:
-                results['SSIM_Overall'] = ssim(crop_raw, crop_new, data_range=DATA_RANGE, multichannel=True, channel_axis=-1)
-            except TypeError:
-                warnings.warn("Falling back to older SSIM API.", UserWarning)
-                results['SSIM_Overall'] = ssim(crop_raw, crop_new, data_range=DATA_RANGE, multichannel=False, channel_axis=-1)
+        # Use multichannel SSIM if images are color
+        if is_color_cropped:
+             # Using try-except for older SSIM API compatibility, though channel_axis is standard now
+             try:
+                 results['SSIM_Overall'] = ssim(crop_raw, crop_new, data_range=DATA_RANGE, channel_axis=-1)
+             except TypeError:
+                 warnings.warn("Falling back to older SSIM API (multichannel=True).", UserWarning)
+                 results['SSIM_Overall'] = ssim(crop_raw, crop_new, data_range=DATA_RANGE, multichannel=True)
         else:
             results['SSIM_Overall'] = ssim(crop_raw, crop_new, data_range=DATA_RANGE)
     except Exception as e:
         warnings.warn(f"SSIM_Overall failed: {e}", RuntimeWarning)
         results['SSIM_Overall'] = np.nan
 
-    if raw_img_input.ndim == 3 and raw_img_input.shape[2] == 3:
+    # --- Color MSE in LAB ---
+    # Only calculate if original inputs were color
+    if is_color:
         try:
-            lab_raw = rgb2lab(crop_raw)
-            lab_new = rgb2lab(crop_new)
+            # Ensure images are float type for rgb2lab if necessary (skimage expects float in range [0,1] or integer in range [0, DATA_RANGE])
+            # Assuming DATA_RANGE is 255 and input is uint8
+            lab_raw = rgb2lab(crop_raw.astype(np.float64) / DATA_RANGE if crop_raw.dtype == np.uint8 else crop_raw)
+            lab_new = rgb2lab(crop_new.astype(np.float64) / DATA_RANGE if crop_new.dtype == np.uint8 else crop_new)
+
             delta_e_sq = np.sum(np.square(lab_raw - lab_new), axis=2)
             results['Color_MSE_LAB'] = np.mean(delta_e_sq)
         except Exception as e:
             warnings.warn(f"Color_MSE_LAB failed: {e}", RuntimeWarning)
             results['Color_MSE_LAB'] = np.nan
     else:
-        results['Color_MSE_LAB'] = np.nan
+        results['Color_MSE_LAB'] = np.nan # Not applicable for grayscale
 
+    # --- CNR (Color Noise Ratio) ---
+    # Only calculate if original inputs were color
+    if is_color:
+        try:
+            # Convert cropped GT to grayscale (Y channel)
+            # Ensure images are uint8 for cv2.cvtColor if necessary
+            crop_raw_gray = cv2.cvtColor(crop_raw.astype(np.uint8), cv2.COLOR_RGB2GRAY) if crop_raw.dtype != np.uint8 else cv2.cvtColor(crop_raw, cv2.COLOR_RGB2GRAY)
+
+            # Calculate local variance map on the GT grayscale image
+            # Use cv2.boxFilter for efficiency (mean of squares - square of mean)
+            mean_filter = np.ones((CNR_VAR_WINDOW_SIZE, CNR_VAR_WINDOW_SIZE), np.float32) / (CNR_VAR_WINDOW_SIZE * CNR_VAR_WINDOW_SIZE)
+            mean_sq = cv2.filter2D(np.square(crop_raw_gray.astype(np.float32)), -1, mean_filter)
+            mean = cv2.filter2D(crop_raw_gray.astype(np.float32), -1, mean_filter)
+            variance_map = mean_sq - np.square(mean)
+            # Clip potential negative values due to float precision
+            variance_map = np.maximum(variance_map, 0)
+
+            # Create a mask of smooth regions in the GT
+            smooth_mask = variance_map < CNR_VAR_THRESHOLD
+
+            # Check if enough smooth pixels were found
+            min_smooth_pixels = CNR_VAR_WINDOW_SIZE * CNR_VAR_WINDOW_SIZE # Require at least one full window of smooth pixels
+            if np.sum(smooth_mask) < min_smooth_pixels:
+                warnings.warn(f"Not enough smooth regions found for CNR calculation (found {np.sum(smooth_mask)} pixels, need >={min_smooth_pixels}).", RuntimeWarning)
+                results['CNR_Cb_Var'] = np.nan
+                results['CNR_Cr_Var'] = np.nan
+            else:
+                # Convert the new (demosaiced) image to YCbCr
+                # Ensure images are uint8 for cv2.cvtColor if necessary
+                crop_new_ycbcr = cv2.cvtColor(crop_new.astype(np.uint8), cv2.COLOR_RGB2YCrCb) if crop_new.dtype != np.uint8 else cv2.cvtColor(crop_new, cv2.COLOR_RGB2YCrCb)
+                # Note: OpenCV uses YCrCb by default, not YCbCr. Channels are Y, Cr, Cb.
+
+                # Extract Cb and Cr channels for pixels within the smooth mask
+                # Cb is index 2, Cr is index 1 in OpenCV's YCrCb
+                new_cb_smooth = crop_new_ycbcr[:, :, 2][smooth_mask]
+                new_cr_smooth = crop_new_ycbcr[:, :, 1][smooth_mask]
+
+                # Calculate variance in the color channels of the demosaiced image over smooth regions
+                results['CNR_Cb_Var'] = np.var(new_cb_smooth)
+                results['CNR_Cr_Var'] = np.var(new_cr_smooth)
+
+        except Exception as e:
+            warnings.warn(f"CNR metrics failed: {e}", RuntimeWarning)
+            results['CNR_Cb_Var'] = np.nan
+            results['CNR_Cr_Var'] = np.nan
+    else:
+        results['CNR_Cb_Var'] = np.nan # Not applicable for grayscale
+        results['CNR_Cr_Var'] = np.nan # Not applicable for grayscale
+
+
+    # --- Edge IoU and Zipper StdLap ---
+    # Calculate using original image size as edges/zippers can occur anywhere
+    # Ensure original images are grayscale for Canny and Laplacian if necessary
     try:
-        gray_raw = cv2.cvtColor(raw_img_input, cv2.COLOR_RGB2GRAY) if raw_img_input.ndim == 3 else raw_img_input
-        gray_new = cv2.cvtColor(new_img_input, cv2.COLOR_RGB2GRAY) if new_img_input.ndim == 3 else new_img_input
+        gray_raw = cv2.cvtColor(raw_img.astype(np.uint8), cv2.COLOR_RGB2GRAY) if is_color else raw_img.astype(np.uint8) # Ensure uint8 for Canny
+        gray_new = cv2.cvtColor(new_img.astype(np.uint8), cv2.COLOR_RGB2GRAY) if is_color else new_img.astype(np.uint8)
+
+        # Canny edge detection
         raw_edges = cv2.Canny(gray_raw, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD) > 0
         new_edges = cv2.Canny(gray_new, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD) > 0
+
+        # Edge IoU calculation
         intersection = np.sum(raw_edges & new_edges)
         union = np.sum(raw_edges | new_edges)
+        # Avoid division by zero
         results['Edge_IoU'] = intersection / max(union, 1e-9)
+
+        # Zipper StdLap calculation (requires float64 input for Laplacian)
+        # Ensure gray_new is float64
         laplacian_new = cv2.Laplacian(gray_new.astype(np.float64), cv2.CV_64F)
         results['Zipper_StdLap'] = np.std(laplacian_new)
+
     except Exception as e:
         warnings.warn(f"Edge/Zipper metrics failed: {e}", RuntimeWarning)
         results['Edge_IoU'] = np.nan
         results['Zipper_StdLap'] = np.nan
+
 
     return results
 

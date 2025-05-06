@@ -21,6 +21,8 @@ except ImportError as e:
 DATA_ROOT = "Data"
 INPUT_DIR = os.path.join(DATA_ROOT, "input")
 OUTPUT_DIR = os.path.join(DATA_ROOT, "output")
+# New directory for difference images
+DIFFERENCE_DIR = os.path.join(OUTPUT_DIR, "differences")
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')
 
 # --- Define the desired order of metric columns ---
@@ -28,15 +30,17 @@ IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')
 DESIRED_METRIC_ORDER = [
     'PSNR_R', 'PSNR_G', 'PSNR_B', 'PSNR_Overall',
     'SSIM_R', 'SSIM_G', 'SSIM_B', 'SSIM_Overall',
-    'Color_MSE_LAB', 'Edge_IoU', 'Zipper_StdLap'
+    'Color_MSE_LAB',
+    'CNR_Cb_Var', 'CNR_Cr_Var', # Added CNR metrics
+    'Edge_IoU', 'Zipper_StdLap'
 ]
-
 
 def clear_output_directories(verbose: bool = False):
     """Clear all output directories managed by this script (keeps input)."""
     if verbose:
         print("Clearing output directories...")
-    dirs_to_clear = [OUTPUT_DIR]
+    # Added DIFFERENCE_DIR to the list of directories to clear
+    dirs_to_clear = [OUTPUT_DIR, DIFFERENCE_DIR]
     for dir_path in dirs_to_clear:
         if os.path.exists(dir_path):
             if verbose:
@@ -47,6 +51,57 @@ def clear_output_directories(verbose: bool = False):
     if verbose:
         print("Finished clearing output directories.")
 
+def save_difference_images(gt_img: np.ndarray, demosaiced_img: np.ndarray, base_filename: str, method_name: str, pattern: str, output_diff_dir: str):
+    """
+    Calculates and saves difference images between GT and demosaiced images.
+
+    Args:
+        gt_img (np.ndarray): Ground truth image (RGB format).
+        demosaiced_img (np.ndarray): Demosaiced image (RGB format).
+        base_filename (str): Base name of the original image file.
+        method_name (str): Name of the demosaicing method used.
+        pattern (str): Bayer pattern used.
+        output_diff_dir (str): Root directory to save difference images into.
+    """
+    # Create a specific directory for this task's differences
+    task_diff_dir = os.path.join(output_diff_dir, f"{base_filename}_{method_name}_{pattern}")
+    os.makedirs(task_diff_dir, exist_ok=True)
+
+    try:
+        # Ensure images are in a format suitable for cv2 operations (e.g., BGR)
+        # Assuming load_image and demosaicing methods output RGB, convert to BGR
+        gt_bgr = cv2.cvtColor(gt_img, cv2.COLOR_RGB2BGR)
+        demosaiced_bgr = cv2.cvtColor(demosaiced_img, cv2.COLOR_RGB2BGR)
+
+        # Calculate absolute differences per channel
+        # cv2.absdiff works element-wise and handles different image depths (e.g., 8-bit, 16-bit)
+        diff_b = cv2.absdiff(gt_bgr[:,:,0], demosaiced_bgr[:,:,0])
+        diff_g = cv2.absdiff(gt_bgr[:,:,1], demosaiced_bgr[:,:,1])
+        diff_r = cv2.absdiff(gt_bgr[:,:,2], demosaiced_bgr[:,:,2])
+
+        # Calculate overall difference magnitude (e.g., max difference across channels)
+        # np.max(..., axis=2) computes the max difference for each pixel across the 3 channels
+        abs_diff_bgr = cv2.absdiff(gt_bgr, demosaiced_bgr)
+        overall_diff_magnitude = np.max(abs_diff_bgr, axis=2)
+
+        # Convert difference images to 8-bit grayscale for better visualization and saving
+        # cv2.convertScaleAbs scales the absolute value to 0-255 and converts to uint8
+        diff_r_8bit = cv2.convertScaleAbs(diff_r)
+        diff_g_8bit = cv2.convertScaleAbs(diff_g)
+        diff_b_8bit = cv2.convertScaleAbs(diff_b)
+        overall_diff_8bit = cv2.convertScaleAbs(overall_diff_magnitude)
+
+
+        # Save the difference images
+        cv2.imwrite(os.path.join(task_diff_dir, "R_channel_diff.png"), diff_r_8bit)
+        cv2.imwrite(os.path.join(task_diff_dir, "G_channel_diff.png"), diff_g_8bit)
+        cv2.imwrite(os.path.join(task_diff_dir, "B_channel_diff.png"), diff_b_8bit)
+        cv2.imwrite(os.path.join(task_diff_dir, "Overall_diff.png"), overall_diff_8bit)
+
+    except Exception as e:
+        print(f"\nERROR saving difference images for {base_filename}_{method_name}_{pattern}: {type(e).__name__} - {e}")
+
+
 def process_image_pattern(task_args):
     """Wrapper function to process a single image task, suitable for parallel execution."""
     file_path, pattern, method_info, base_filename = task_args
@@ -56,9 +111,8 @@ def process_image_pattern(task_args):
     # print(f"Processing: {os.path.basename(file_path)} with {method_name} ({pattern})")
 
     try:
-        src_img = load_image(file_path)
+        src_img = load_image(file_path) # Assuming load_image returns RGB
         if src_img is None:
-             # load_image should ideally print an error if it fails
              return None
 
         bayer_img = make_bayer(src_img, pattern=pattern)
@@ -66,16 +120,22 @@ def process_image_pattern(task_args):
             print(f"\nCould not create Bayer image for {os.path.basename(file_path)} with pattern {pattern}")
             return None
 
-        demosaiced_img = method_func(bayer_img, pattern=pattern)
+        demosaiced_img = method_func(bayer_img, pattern=pattern) # Assuming method_func returns RGB
         if demosaiced_img is None:
              print(f"\nDemosaicing failed for {os.path.basename(file_path)} with {method_name} ({pattern})")
              return None
 
+        # --- Add saving of difference images ---
+        save_difference_images(src_img, demosaiced_img, base_filename, method_name, pattern, DIFFERENCE_DIR)
+        # --------------------------------------
+
+        # Save the demosaiced image
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         output_filename = os.path.join(OUTPUT_DIR, f"{base_filename}_{method_name}_{pattern}.png")
-        # Assuming demosaiced_img is RGB, convert to BGR for cv2.imwrite
+        # Convert demosaiced_img (assuming RGB) to BGR for cv2.imwrite
         cv2.imwrite(output_filename, cv2.cvtColor(demosaiced_img, cv2.COLOR_RGB2BGR))
 
+        # Calculate and return metrics
         metrics = calculate_metrics(src_img, demosaiced_img)
         if metrics is None:
              print(f"\nMetric calculation failed for {os.path.basename(file_path)} with {method_name} ({pattern})")
@@ -93,6 +153,7 @@ def process_image_pattern(task_args):
         print(f"\nERROR processing '{os.path.basename(file_path)}' with {method_name} ({pattern}): {type(e).__name__} - {e}")
         return None
 
+
 def process_images(patterns: list = None, parallel: bool = True, max_workers: int = None):
     """
     Process images with multiple Bayer patterns and demosaicing methods and report metrics.
@@ -107,8 +168,9 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
     Returns:
         pd.DataFrame: DataFrame containing the results and metrics, or None if no results.
     """
-    create_directories([DATA_ROOT, INPUT_DIR, OUTPUT_DIR])
-    clear_output_directories(verbose=True)
+    # Added DIFFERENCE_DIR to directories to create
+    create_directories([DATA_ROOT, INPUT_DIR, OUTPUT_DIR, DIFFERENCE_DIR])
+    clear_output_directories(verbose=True) # This will now clear the difference directory too
 
     if patterns is None or not patterns:
         patterns = ['RGGB']
@@ -141,7 +203,7 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
         file_path = os.path.join(INPUT_DIR, filename)
         base_filename = os.path.splitext(filename)[0]
         try:
-            src_img = load_image(file_path)
+            src_img = load_image(file_path) # Assuming load_image returns RGB
             if src_img is not None:
                 # Save ground truth channels once per image
                 dump_gt_channels(src_img, base_filename, OUTPUT_DIR)
@@ -208,11 +270,9 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
         df = pd.DataFrame(results_data)
 
         # Define the full column order
-        # Start with ID columns
         id_cols = ['Image', 'Pattern', 'Method']
 
         # Combine ID columns and desired metric columns, ensuring they exist in the DataFrame
-        # This list will be used for both DataFrame reindexing and explicit tabulate headers
         col_order = [col for col in id_cols + DESIRED_METRIC_ORDER if col in df.columns]
 
         # Reindex the DataFrame to apply the new column order for saving and subsequent operations
@@ -224,29 +284,23 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
 
         print("\n\n--- Results Summary ---")
         # Pass the DataFrame AND the desired column order explicitly to tabulate
-        # Using headers=col_order explicitly defines the header row and order,
-        # preventing the duplication seen with headers='keys'.
         print(tabulate(df, headers=col_order, tablefmt='grid', floatfmt='.4f', showindex=False))
 
         # Calculate and display average metrics
-        # Ensure we only try to average numeric columns
         numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
 
         if numeric_cols:
-            # Group by Method and Pattern and calculate mean for numeric columns
-            # The resulting df_means will have 'Method' and 'Pattern' + all numeric_cols
             df_means = df.groupby(['Method', 'Pattern'])[numeric_cols].mean().reset_index()
 
             # Define the column order specifically for the average table
-            # Start with ID columns, then add the numeric metric columns from the desired order
             avg_metric_cols_order = [col for col in DESIRED_METRIC_ORDER if col in numeric_cols]
             avg_col_order = [col for col in id_cols + avg_metric_cols_order if col in df_means.columns]
 
-            # Reindex the means DataFrame to match the desired column order for the average table
+            # Reindex the means DataFrame
             df_means = df_means.reindex(columns=avg_col_order)
 
+
             print("\n\n--- Average Metrics by Method and Pattern ---")
-            # Pass the means DataFrame and the explicit column order for the average table
             print(tabulate(df_means, headers=avg_col_order, tablefmt='grid', floatfmt='.4f', showindex=False))
         else:
              print("\nNo numeric metric columns found for averaging.")
@@ -254,7 +308,6 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
 
     except Exception as e:
         print(f"\nError during results processing or reporting: {type(e).__name__} - {e}")
-        # Return the DataFrame even if reporting fails
         return df
 
     return df
