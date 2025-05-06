@@ -5,6 +5,36 @@ import shutil
 from skimage.metrics import structural_similarity as ssim, peak_signal_noise_ratio as psnr
 from skimage.color import rgb2lab
 import warnings
+import imageio
+
+debug_mode = True
+# Bayer pattern slicing dictionary - defined once for all supported patterns
+PATTERN_SLICES = {
+    'RGGB': {
+        'R': (slice(0, None, 2), slice(0, None, 2)),
+        'G1': (slice(0, None, 2), slice(1, None, 2)),
+        'G2': (slice(1, None, 2), slice(0, None, 2)),
+        'B': (slice(1, None, 2), slice(1, None, 2)),
+    },
+    'BGGR': {
+        'B': (slice(0, None, 2), slice(0, None, 2)),
+        'G1': (slice(0, None, 2), slice(1, None, 2)),
+        'G2': (slice(1, None, 2), slice(0, None, 2)),
+        'R': (slice(1, None, 2), slice(1, None, 2)),
+    },
+    'GRBG': {
+        'G1': (slice(0, None, 2), slice(0, None, 2)),
+        'R': (slice(0, None, 2), slice(1, None, 2)),
+        'B': (slice(1, None, 2), slice(0, None, 2)),
+        'G2': (slice(1, None, 2), slice(1, None, 2)),
+    },
+    'GBRG': {
+        'G1': (slice(0, None, 2), slice(0, None, 2)),
+        'B': (slice(0, None, 2), slice(1, None, 2)),
+        'R': (slice(1, None, 2), slice(0, None, 2)),
+        'G2': (slice(1, None, 2), slice(1, None, 2)),
+    }
+}
 
 def create_directories(dirs):
     """Create necessary directories for data storage."""
@@ -164,3 +194,52 @@ def calculate_metrics(raw_img_input: 'numpy.ndarray', new_img_input: 'numpy.ndar
         results['Zipper_StdLap'] = np.nan
 
     return results
+
+def update_filename(pattern):
+    """Updates the filename prefix for debug image saves."""
+    global FileName_DLMMSE
+    FileName_DLMMSE = pattern
+
+def save_image(image, stage_name, pattern=None, is_mask=False):
+    """Saves an image or mask as a PNG file if debug_mode is enabled."""
+    global FileName_DLMMSE
+    if not debug_mode:
+        return
+    foldername = os.path.join("Data/DLMMSE1/")
+    os.makedirs(foldername, exist_ok=True)
+    
+    if is_mask:
+        image_to_save = (image * 255).astype(np.uint8)
+        filename = f"{FileName_DLMMSE}_{stage_name}"
+        if pattern:
+            filename = f"{FileName_DLMMSE}_{pattern}_{stage_name}"
+        filename += "_mask.png"
+    else:
+        image_to_save = image.clip(0, 255).astype(np.uint8)
+        filename = f"{FileName_DLMMSE}_{stage_name}.png"
+    full_path = os.path.join(foldername, filename)
+    try:
+        if image_to_save.ndim in (2, 3):
+            imageio.imwrite(full_path, image_to_save)
+        else:
+            print(f"Warning: Cannot save image '{filename}' with unexpected shape {image_to_save.shape}")
+    except Exception as e:
+        print(f"Error saving debug image {full_path}: {e}")
+
+def create_bayer_masks(height, width, pattern):
+    """Create binary masks for R, G, and B pixel locations based on Bayer pattern."""
+    pattern = pattern.upper()
+    if pattern not in PATTERN_SLICES:
+        supported = list(PATTERN_SLICES.keys())
+        raise ValueError(f"Unsupported Bayer pattern: {pattern}. Supported patterns are: {supported}")
+    slices = PATTERN_SLICES[pattern]
+    R_mask = np.zeros((height, width), dtype=bool)
+    G_mask_01 = np.zeros((height, width), dtype=bool)
+    G_mask_10 = np.zeros((height, width), dtype=bool)
+    B_mask = np.zeros((height, width), dtype=bool)
+    R_mask[slices['R']] = True
+    G_mask_01[slices['G1']] = True
+    G_mask_10[slices['G2']] = True
+    B_mask[slices['B']] = True
+    G_mask = G_mask_01 | G_mask_10
+    return R_mask, G_mask, G_mask_01, G_mask_10, B_mask
