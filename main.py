@@ -33,8 +33,13 @@ def clear_output_directories(verbose: bool = False):
     """Clear all output directories managed by this script (keeps input)."""
     if verbose:
         print("Clearing output directories...")
-    # Added DIFFERENCE_DIR to the list of directories to clear
-    dirs_to_clear = [OUTPUT_DIR, DIFFERENCE_DIR]
+    # List all output directories, excluding the input directory
+    dirs_to_clear = [
+        OUTPUT_DIR,           # Final demosaiced outputs
+        DIFFERENCE_DIR,      # Difference images or comparison metrics
+        os.path.join("Data", "DLMMSE"),
+        os.path.join("Data", "DLMMSE1"),
+    ]
     for dir_path in dirs_to_clear:
         if os.path.exists(dir_path):
             if verbose:
