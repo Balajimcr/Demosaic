@@ -7,11 +7,11 @@ import cv2
 
 from methods.Utils import create_bayer_masks, update_filename, save_image, load_image
 
-
 # Global configurations
 debug_mode = True
 FileName_DLMMSE = "DLMMSE_Hybrid"
 enable_adaptive_directional_G = True # For Green channel adaptive interpolation
+enable_hybrid_green = True # New flag for Green channel hybrid enhancement
 enable_edge_aware_rb_interpolation = False # True for enhanced RB, False for original RB
 
 # Pre-defined kernels
@@ -21,10 +21,9 @@ MEAN_FILTER_1D = np.ones(9) / 9.0
 KERNEL_DIAGONAL = np.array([[1, 0, 1], [0, 0, 0], [1, 0, 1]]) / 4.0
 KERNEL_CROSS = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]]) / 4.0
 
-
 # Core Algorithm Functions
 def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
-    """Interpolate the G channel at R and B positions."""
+    """Interpolate the G channel at R and B positions with optional hybrid enhancement."""
     R, G, B = new_img[:, :, 0], new_img[:, :, 1], new_img[:, :, 2]
     S = R + G + B
     
@@ -32,7 +31,13 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         pattern, save = debug_info
         save(S, "1.0_S_sum_of_channels")
     
-    if enable_adaptive_directional_G: # Using the renamed flag for clarity
+    # Compute fixed interpolation
+    fixed_kernel_g = np.array([1/2, 0, 1/2])
+    H_fixed = convolve1d(S, fixed_kernel_g, axis=1, mode='reflect')
+    V_fixed = convolve1d(S, fixed_kernel_g, axis=0, mode='reflect')
+
+    if enable_adaptive_directional_G:
+        # Compute adaptive interpolation
         epsilon_g_adapt = 1e-5
         padded_S_horiz = np.pad(S, ((0, 0), (1, 1)), mode='reflect')
         left = padded_S_horiz[:, :-2]
@@ -40,8 +45,8 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         weight_left = 1.0 / (np.abs(S - left) + epsilon_g_adapt)
         weight_right = 1.0 / (np.abs(S - right) + epsilon_g_adapt)
         sum_weights_h = weight_left + weight_right
-        sum_weights_h = np.where(sum_weights_h == 0, 1, sum_weights_h) # Avoid div by zero
-        H = (left * weight_left + right * weight_right) / sum_weights_h
+        sum_weights_h = np.where(sum_weights_h == 0, 1, sum_weights_h)
+        H_adapt = (left * weight_left + right * weight_right) / sum_weights_h
         
         padded_S_vert = np.pad(S, ((1, 1), (0, 0)), mode='reflect')
         up = padded_S_vert[:-2, :]
@@ -49,20 +54,36 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         weight_up = 1.0 / (np.abs(S - up) + epsilon_g_adapt)
         weight_down = 1.0 / (np.abs(S - down) + epsilon_g_adapt)
         sum_weights_v = weight_up + weight_down
-        sum_weights_v = np.where(sum_weights_v == 0, 1, sum_weights_v) # Avoid div by zero
-        V = (up * weight_up + down * weight_down) / sum_weights_v
+        sum_weights_v = np.where(sum_weights_v == 0, 1, sum_weights_v)
+        V_adapt = (up * weight_up + down * weight_down) / sum_weights_v
         
-        if debug_info:
-            pattern, save = debug_info
-            save(H, "1.1_H_adaptive_interpolation")
-            save(V, "1.1_V_adaptive_interpolation")
+        if enable_hybrid_green:
+            # Hybrid enhancement: blend fixed and adaptive based on gradient magnitude
+            T = 30.0 # Threshold for blending
+            grad_h = np.abs(left - right)
+            grad_v = np.abs(up - down)
+            w_h = np.clip(grad_h / T, 0, 1)
+            w_v = np.clip(grad_v / T, 0, 1)
+            H = (1 - w_h) * H_fixed + w_h * H_adapt
+            V = (1 - w_v) * V_fixed + w_v * V_adapt
+            
+            if debug_info:
+                save(H, "1.1_H_hybrid_interpolation")
+                save(V, "1.1_V_hybrid_interpolation")
+                save(w_h, "1.1_w_h_blending_weight")
+                save(w_v, "1.1_w_v_blending_weight")
+        else:
+            H = H_adapt
+            V = V_adapt
+            
+            if debug_info:
+                save(H, "1.1_H_adaptive_interpolation")
+                save(V, "1.1_V_adaptive_interpolation")
     else:
-        fixed_kernel_g = np.array([1/2, 0, 1/2])
-        H = convolve1d(S, fixed_kernel_g, axis=1, mode='reflect')
-        V = convolve1d(S, fixed_kernel_g, axis=0, mode='reflect')
+        H = H_fixed
+        V = V_fixed
         
         if debug_info:
-            pattern, save = debug_info
             save(H, "1.1_H_fixed_interpolation")
             save(V, "1.1_V_fixed_interpolation")
     
@@ -70,7 +91,6 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     delta_V = V - S
     
     if debug_info:
-        pattern, save = debug_info
         save(delta_H, "1.1_delta_H_before_sign_flip")
         save(delta_V, "1.1_delta_V_before_sign_flip")
     
@@ -80,7 +100,6 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     delta_V[G_mask_10] = -delta_V[G_mask_10]
     
     if debug_info:
-        pattern, save = debug_info
         save(delta_H, "1.1_delta_H_after_sign_flip")
         save(delta_V, "1.1_delta_V_after_sign_flip")
     
@@ -89,7 +108,6 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     gaussian_V = convolve1d(delta_V, gaussian_filter_kernel, axis=0, mode='reflect')
     
     if debug_info:
-        pattern, save = debug_info
         save(gaussian_H, "1.2_gaussian_smoothed_delta_H")
         save(gaussian_V, "1.2_gaussian_smoothed_delta_V")
     
@@ -105,7 +123,6 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     var_noise_V = convolve1d(np.square(delta_V - gaussian_V), mean_filter_kernel_g, axis=0, mode='reflect') + epsilon_var
     
     if debug_info:
-        pattern, save = debug_info
         save(mean_H, "1.3_mean_H")
         save(mean_V, "1.3_mean_V")
         save(var_value_H, "1.3_var_value_H")
@@ -120,20 +137,17 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     new_V = mean_V + signal_ratio_V * (delta_V - mean_V)
     
     if debug_info:
-        pattern, save = debug_info
         save(new_H, "1.4_refined_delta_H")
         save(new_V, "1.4_refined_delta_V")
     
     var_x_H = np.abs(var_value_H - var_value_H**2 / (var_value_H + var_noise_H)) + epsilon_var
     var_x_V = np.abs(var_value_V - var_value_V**2 / (var_value_V + var_noise_V)) + epsilon_var
     sum_var_x = var_x_H + var_x_V
-    # sum_var_x = np.where(sum_var_x == 0, 1, sum_var_x) # Redundant due to epsilon_var
     w_H = var_x_V / sum_var_x
     w_V = var_x_H / sum_var_x
     final_delta_G = w_H * new_H + w_V * new_V
     
     if debug_info:
-        pattern, save = debug_info
         save(var_x_H, "1.5_var_x_H")
         save(var_x_V, "1.5_var_x_V")
         save(w_H, "1.5_weight_H")
@@ -144,33 +158,24 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     new_img[B_mask, 1] = new_img[B_mask, 2] + final_delta_G[B_mask]
     
     if debug_info:
-        pattern, save = debug_info
         save(new_img[:, :, 1], "1.6_Final_G_Channel_Interpolated")
     
     return new_img
 
 def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, debug_info=None):
     """Interpolate R and B channels using the original fixed-kernel DLMMSE method."""
-    G_interpolated = new_img[:, :, 1].copy() # Fully interpolated G
-    # R_original_sparse and B_original_sparse are implicitly new_img[:,:,0] and new_img[:,:,2]
-    # which at this stage contain original sensor values at sensor locations, and 0 elsewhere.
+    G_interpolated = new_img[:, :, 1].copy()
     
     if debug_info:
-        pattern, save = debug_info # Unpack save function
+        pattern, save = debug_info
 
-    # Calculate G-R and G-B color differences
-    # diff_GR = G_interpolated - R_at_R_locations (and G_interpolated elsewhere)
-    # diff_GB = G_interpolated - B_at_B_locations (and G_interpolated elsewhere)
-    diff_GR = G_interpolated - new_img[:, :, 0] 
+    diff_GR = G_interpolated - new_img[:, :, 0]
     diff_GB = G_interpolated - new_img[:, :, 2]
     
     if debug_info:
-        # Save the full difference images; they are inputs to convolution
         save(diff_GR, "2.1_orig_diff_GR_initial_full")
         save(diff_GB, "2.1_orig_diff_GB_initial_full")
 
-    # Interpolate color differences using fixed diagonal kernels
-    # convolve2d from scipy.signal defaults to boundary='fill', fillvalue=0
     delta_GR_diag = convolve2d(diff_GR, KERNEL_DIAGONAL, mode='same')
     delta_GB_diag = convolve2d(diff_GB, KERNEL_DIAGONAL, mode='same')
 
@@ -178,7 +183,6 @@ def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, d
         save(delta_GR_diag, "2.1_orig_delta_GR_interpolated_diag")
         save(delta_GB_diag, "2.1_orig_delta_GB_interpolated_diag")
     
-    # Update R at B locations and B at R locations
     new_img[B_mask, 0] = G_interpolated[B_mask] - delta_GR_diag[B_mask]
     new_img[R_mask, 2] = G_interpolated[R_mask] - delta_GB_diag[R_mask]
     
@@ -186,7 +190,6 @@ def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, d
         save(new_img[:, :, 0], "2.1_orig_R_after_B_site_interpolation")
         save(new_img[:, :, 2], "2.1_orig_B_after_R_site_interpolation")
 
-    # Update color differences now that R and B are denser
     diff_GR_partial = G_interpolated - new_img[:, :, 0]
     diff_GB_partial = G_interpolated - new_img[:, :, 2]
 
@@ -194,7 +197,6 @@ def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, d
         save(diff_GR_partial, "2.2_orig_diff_GR_partial")
         save(diff_GB_partial, "2.2_orig_diff_GB_partial")
 
-    # Interpolate new color differences using fixed cross kernels
     delta_GR_cross = convolve2d(diff_GR_partial, KERNEL_CROSS, mode='same')
     delta_GB_cross = convolve2d(diff_GB_partial, KERNEL_CROSS, mode='same')
 
@@ -202,7 +204,6 @@ def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, d
         save(delta_GR_cross, "2.2_orig_delta_GR_interpolated_cross")
         save(delta_GB_cross, "2.2_orig_delta_GB_interpolated_cross")
         
-    # Update R and B at G locations
     new_img[G_mask_combined, 0] = G_interpolated[G_mask_combined] - delta_GR_cross[G_mask_combined]
     new_img[G_mask_combined, 2] = G_interpolated[G_mask_combined] - delta_GB_cross[G_mask_combined]
     
@@ -213,10 +214,7 @@ def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, d
     return new_img
 
 def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
-    """
-    Interpolate R and B channels using the enhanced edge-aware algorithm.
-    (This is the function from the previous response)
-    """
+    """Interpolate R and B channels using the enhanced edge-aware algorithm."""
     G_interpolated = new_img[:, :, 1].copy()
     R_original_sparse = new_img[:, :, 0].copy()
     B_original_sparse = new_img[:, :, 2].copy()
@@ -240,7 +238,6 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
     weight_diag1 = 1.0 / grad_G_diag1
     weight_diag2 = 1.0 / grad_G_diag2
     sum_weights_diag = weight_diag1 + weight_diag2
-    # sum_weights_diag = np.where(sum_weights_diag == 0, 1, sum_weights_diag) # Redundant
 
     diff_GR_padded = np.pad(diff_GR, ((1,1),(1,1)), mode='reflect')
     R_mask_padded = np.pad(R_mask.astype(float), ((1,1),(1,1)), mode='reflect')
@@ -282,7 +279,6 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
     grad_G_H_right = np.abs(G_interpolated - G_right) + epsilon_rb_adapt
     weight_G_left = 1.0 / grad_G_H_left; weight_G_right = 1.0 / grad_G_H_right
     sum_weights_G_H = weight_G_left + weight_G_right
-    # sum_weights_G_H = np.where(sum_weights_G_H == 0, 1, sum_weights_G_H) # Redundant
 
     dGRp_padded_H = np.pad(diff_GR_partial, ((0,0),(1,1)), mode='reflect')
     dGRp_left = dGRp_padded_H[:, :-2]; dGRp_right = dGRp_padded_H[:, 2:]
@@ -297,7 +293,6 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
     grad_G_V_down = np.abs(G_interpolated - G_down) + epsilon_rb_adapt
     weight_G_up = 1.0 / grad_G_V_up; weight_G_down = 1.0 / grad_G_V_down
     sum_weights_G_V = weight_G_up + weight_G_down
-    # sum_weights_G_V = np.where(sum_weights_G_V == 0, 1, sum_weights_G_V) # Redundant
 
     dGRp_padded_V = np.pad(diff_GR_partial, ((1,1),(0,0)), mode='reflect')
     dGRp_up = dGRp_padded_V[:-2, :]; dGRp_down = dGRp_padded_V[2:, :]
@@ -319,8 +314,8 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
     new_img[G_mask_combined, 0] = G_interpolated[G_mask_combined] - final_interpolated_dGRp_at_G[G_mask_combined]
 
     final_interpolated_dGBp_at_G = np.zeros_like(G_interpolated)
-    final_interpolated_dGBp_at_G[G_mask_01] = interpolated_dGBp_V[G_mask_01] 
-    final_interpolated_dGBp_at_G[G_mask_10] = interpolated_dGBp_H[G_mask_10] 
+    final_interpolated_dGBp_at_G[G_mask_01] = interpolated_dGBp_V[G_mask_01]
+    final_interpolated_dGBp_at_G[G_mask_10] = interpolated_dGBp_H[G_mask_10]
     new_img[G_mask_combined, 2] = G_interpolated[G_mask_combined] - final_interpolated_dGBp_at_G[G_mask_combined]
     
     if debug_info:
@@ -328,7 +323,6 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
         save(new_img[:, :, 2], "2.8_enh_Final_B_Channel")
         
     return new_img
-
 
 def run(img, pattern='RGGB'):
     """DLMMSE demosaicing function with selectable RB interpolation."""
@@ -372,7 +366,6 @@ def run(img, pattern='RGGB'):
     
     if debug_mode and debug_info_tuple:
         _, save_dbg_func = debug_info_tuple
-        # Append suffix to final image name based on mode for clarity in debug outputs
         rb_mode_suffix = "_RBenhanced" if enable_edge_aware_rb_interpolation else "_RBoriginal"
         save_dbg_func(final_demosaiced_img, f"3.0_Final_Demosaiced_Image{rb_mode_suffix}")
     
@@ -385,12 +378,11 @@ def test():
     print(f"Edge-Aware RB Interpolation ENABLED: {enable_edge_aware_rb_interpolation}")
     
     global FileName_DLMMSE
-    original_global_filename_prefix = FileName_DLMMSE 
-    # Adjust filename based on RB mode for test outputs
+    original_global_filename_prefix = FileName_DLMMSE
     rb_mode_str = "EdgeAwareRB" if enable_edge_aware_rb_interpolation else "OriginalRB"
     FileName_DLMMSE = f"UnitTest_DLMMSE_{rb_mode_str}"
 
-    input_image_filename = "RGGB_0.0_input_bayer_img.png" 
+    input_image_filename = "RGGB_0.0_input_bayer_img.png"
     base_data_dir = "Data"
     input_subdir = "DLMMSE1"
     input_image_path = os.path.join(base_data_dir, input_subdir, input_image_filename)
@@ -418,7 +410,7 @@ def test():
         FileName_DLMMSE = original_global_filename_prefix
         return
     
-    test_output_main_dir = os.path.join(base_data_dir, f"UnitTest_DLMMSE_{rb_mode_str}_Output") 
+    test_output_main_dir = os.path.join(base_data_dir, f"UnitTest_DLMMSE_{rb_mode_str}_Output")
     os.makedirs(test_output_main_dir, exist_ok=True)
     print(f"Test output (final image) will be saved in: {test_output_main_dir}")
     if debug_mode:
