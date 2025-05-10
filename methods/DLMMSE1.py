@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.signal import convolve2d # Needed for original RB interpolation
-from scipy.ndimage import convolve1d # Used in Green channel interpolation
+from scipy.ndimage import convolve1d, uniform_filter, gaussian_filter # Used in Green channel interpolation, and novel features
 import os
 import imageio
 import cv2
@@ -13,6 +13,7 @@ FileName_DLMMSE = "DLMMSE_Hybrid"
 enable_adaptive_directional_G = True # For Green channel adaptive interpolation
 enable_hybrid_green = True # New flag for Green channel hybrid enhancement
 enable_edge_aware_rb_interpolation = False # True for enhanced RB, False for original RB
+enable_adaptive_threshold = True   # Dynamic threshold based on local statistics
 
 # Pre-defined kernels
 KERNEL_1D_HV = np.array([-1, 2, 2, 2, -1]) / 4.0
@@ -58,8 +59,16 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
         V_adapt = (up * weight_up + down * weight_down) / sum_weights_v
         
         if enable_hybrid_green:
+            if enable_adaptive_threshold:
+                # Use adaptive threshold based on local statistics
+                adaptive_T = compute_local_gradient_statistics(S)
+                T = adaptive_T   # Use dynamic threshold
+                if debug_info:
+                    save(adaptive_T, "1.0.5_adaptive_threshold_map")
+            else:
+                T = 30.0   # Original fixed threshold
+            
             # Hybrid enhancement: blend fixed and adaptive based on gradient magnitude
-            T = 30.0 # Threshold for blending
             grad_h = np.abs(left - right)
             grad_v = np.abs(up - down)
             w_h = np.clip(grad_h / T, 0, 1)
@@ -324,6 +333,26 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
         
     return new_img
 
+def compute_local_gradient_statistics(image, window_size=7):
+    """Compute local gradient statistics for adaptive threshold selection."""
+    # Compute gradients
+    grad_x = np.abs(np.gradient(image, axis=1))
+    grad_y = np.abs(np.gradient(image, axis=0))
+    grad_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    
+    # Compute local statistics using uniform filter
+    local_mean = uniform_filter(grad_magnitude, size=window_size)
+    
+    # Ensure the argument to sqrt is non-negative for local_std
+    local_variance = uniform_filter(grad_magnitude**2, size=window_size) - local_mean**2
+    local_std = np.sqrt(np.maximum(0, local_variance)) # Added np.maximum(0, ...) for robustness
+    
+    # Adaptive threshold based on local statistics
+    adaptive_threshold = local_mean + 1.5 * local_std
+    adaptive_threshold = np.clip(adaptive_threshold, 10.0, 100.0)   # Reasonable bounds
+    
+    return adaptive_threshold
+
 def run(img, pattern='RGGB'):
     """DLMMSE demosaicing function with selectable RB interpolation."""
     height, width, _ = img.shape
@@ -348,7 +377,6 @@ def run(img, pattern='RGGB'):
         save_dbg_func(G_mask_01, "0.1_G_mask_01_type1", is_mask_local=True)
         save_dbg_func(G_mask_10, "0.1_G_mask_10_type2", is_mask_local=True)
         save_dbg_func(G_mask_combined, "0.1_G_mask_combined", is_mask_local=True)
-        save_dbg_func(B_mask, "0.1_B_mask", is_mask_local=True)
         save_dbg_func(new_img_float[:, :, 0] * R_mask, "0.2_initial_R_channel_masked")
         save_dbg_func(new_img_float[:, :, 1] * G_mask_combined, "0.2_initial_G_channel_masked")
         save_dbg_func(new_img_float[:, :, 2] * B_mask, "0.2_initial_B_channel_masked")
@@ -367,7 +395,13 @@ def run(img, pattern='RGGB'):
     if debug_mode and debug_info_tuple:
         _, save_dbg_func = debug_info_tuple
         rb_mode_suffix = "_RBenhanced" if enable_edge_aware_rb_interpolation else "_RBoriginal"
-        save_dbg_func(final_demosaiced_img, f"3.0_Final_Demosaiced_Image{rb_mode_suffix}")
+        
+        # Add novel features to filename if enabled
+        features_str = ""
+        if enable_adaptive_threshold:
+            features_str += "_AdaptThresh"
+            
+        save_dbg_func(final_demosaiced_img, f"3.0_Final_Demosaiced_Image{rb_mode_suffix}{features_str}")
     
     return final_demosaiced_img
 
@@ -377,10 +411,20 @@ def test():
     print(f"Starting self-test for DLMMSE...")
     print(f"Edge-Aware RB Interpolation ENABLED: {enable_edge_aware_rb_interpolation}")
     
+    # Print novel feature status
+    print(f"Novel features enabled:")
+    print(f"   - Adaptive Threshold: {enable_adaptive_threshold}")
+    
     global FileName_DLMMSE
     original_global_filename_prefix = FileName_DLMMSE
+    
+    # Build filename based on features
+    features_str = ""
+    if enable_adaptive_threshold:
+        features_str += "AdaptThresh_"
+    
     rb_mode_str = "EdgeAwareRB" if enable_edge_aware_rb_interpolation else "OriginalRB"
-    FileName_DLMMSE = f"UnitTest_DLMMSE_{rb_mode_str}"
+    FileName_DLMMSE = f"UnitTest_DLMMSE_{features_str}{rb_mode_str}"
 
     input_image_filename = "RGGB_0.0_input_bayer_img.png"
     base_data_dir = "Data"
@@ -396,7 +440,7 @@ def test():
             alt_input_path = os.path.join("..", base_data_dir, input_subdir, input_image_filename)
             img_bgr_uint8 = cv2.imread(alt_input_path)
             if img_bgr_uint8 is None:
-                 raise FileNotFoundError(f"Image file not found at {input_image_path} or {alt_input_path}")
+                raise FileNotFoundError(f"Image file not found at {input_image_path} or {alt_input_path}")
             input_image_path = alt_input_path
         img_rgb_uint8 = cv2.cvtColor(img_bgr_uint8, cv2.COLOR_BGR2RGB)
     except FileNotFoundError as e:
@@ -410,7 +454,7 @@ def test():
         FileName_DLMMSE = original_global_filename_prefix
         return
     
-    test_output_main_dir = os.path.join(base_data_dir, f"UnitTest_DLMMSE_{rb_mode_str}_Output")
+    test_output_main_dir = os.path.join(base_data_dir, f"UnitTest_DLMMSE_{features_str}{rb_mode_str}_Output")
     os.makedirs(test_output_main_dir, exist_ok=True)
     print(f"Test output (final image) will be saved in: {test_output_main_dir}")
     if debug_mode:
@@ -421,7 +465,7 @@ def test():
     try:
         demosaiced_img = run(img_rgb_uint8, pattern=test_pattern)
         base_input_fn = os.path.basename(input_image_path)
-        demosaiced_output_filename = f"demosaiced_{rb_mode_str}_output_of_{base_input_fn}"
+        demosaiced_output_filename = f"demosaiced_{features_str}{rb_mode_str}_output_of_{base_input_fn}"
         demosaiced_output_path = os.path.join(test_output_main_dir, demosaiced_output_filename)
         imageio.imwrite(demosaiced_output_path, demosaiced_img)
         print(f"Successfully saved final demosaiced image to {demosaiced_output_path}")
@@ -436,9 +480,12 @@ def test():
     print(f"Self-test for DLMMSE (RB mode: {'Enhanced' if enable_edge_aware_rb_interpolation else 'Original'}) finished.")
 
 if __name__ == "__main__":
-    print("--- Testing with Enhanced RB Interpolation ---")
-    enable_edge_aware_rb_interpolation = True
-    test()
-    print("\n--- Testing with Original RB Interpolation ---")
+    print("--- Testing with Original DLMMSE (no novel features) ---")
+    enable_adaptive_threshold = False
     enable_edge_aware_rb_interpolation = False
+    test()
+    
+    print("\n--- Testing with Only Adaptive Threshold ---")
+    enable_adaptive_threshold = True
+    enable_edge_aware_rb_interpolation = True # Test Adaptive Threshold with Enhanced RB Interpolation
     test()
