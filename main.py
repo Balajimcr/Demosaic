@@ -303,6 +303,114 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
             print(tabulate(df_means, headers=avg_col_order, tablefmt='grid', floatfmt='.4f', showindex=False))
         else:
              print("\nNo numeric metric columns found for averaging.")
+             # --- Find best algorithm and calculate improvements ---
+        
+        if numeric_cols:
+            # Define metric types (True for "higher is better", False for "lower is better")
+            higher_is_better = {
+                'PSNR_R': True, 'PSNR_G': True, 'PSNR_B': True, 'PSNR_Overall': True,
+                'SSIM_R': True, 'SSIM_G': True, 'SSIM_B': True, 'SSIM_Overall': True,
+                'Color_MSE_LAB': False,
+                'CNR_Cb_Var': False, 'CNR_Cr_Var': False,
+                'Edge_IoU': True,
+                'Zipper_StdLap': False
+            }
+            
+            # Find best method for each metric and pattern
+            best_methods = {}
+            for pattern in df_means['Pattern'].unique():
+                pattern_data = df_means[df_means['Pattern'] == pattern]
+                best_methods[pattern] = {}
+                
+                for metric in avg_metric_cols_order:
+                    if metric in higher_is_better:
+                        if higher_is_better[metric]:
+                            best_idx = pattern_data[metric].idxmax()
+                        else:
+                            best_idx = pattern_data[metric].idxmin()
+                        
+                        best_methods[pattern][metric] = {
+                            'method': pattern_data.loc[best_idx, 'Method'],
+                            'value': pattern_data.loc[best_idx, metric]
+                        }
+            
+            # Calculate improvement percentages
+            improvement_data = []
+            for pattern in df_means['Pattern'].unique():
+                pattern_data = df_means[df_means['Pattern'] == pattern]
+                
+                for metric in avg_metric_cols_order:
+                    if metric in higher_is_better:
+                        best_method = best_methods[pattern][metric]['method']
+                        best_value = best_methods[pattern][metric]['value']
+                        
+                        for _, row in pattern_data.iterrows():
+                            method = row['Method']
+                            value = row[metric]
+                            
+                            if method != best_method:
+                                if higher_is_better[metric]:
+                                    improvement = ((best_value - value) / abs(value)) * 100
+                                else:
+                                    improvement = ((value - best_value) / abs(value)) * 100
+                                
+                                improvement_data.append({
+                                    'Pattern': pattern,
+                                    'Metric': metric,
+                                    'Best_Method': best_method,
+                                    'Compared_Method': method,
+                                    'Best_Value': best_value,
+                                    'Compared_Value': value,
+                                    'Improvement_%': improvement
+                                })
+            
+            # Create improvement summary
+            print("\n\n--- Best Methods by Metric ---")
+            for pattern in best_methods:
+                print(f"\nPattern: {pattern}")
+                for metric, info in best_methods[pattern].items():
+                    print(f"  {metric}: {info['method']} (value: {info['value']:.4f})")
+            
+            if improvement_data:
+                improvement_df = pd.DataFrame(improvement_data)
+                
+                # Average improvement by best method
+                avg_improvement = improvement_df.groupby(['Best_Method', 'Compared_Method'])['Improvement_%'].mean().reset_index()
+                avg_improvement = avg_improvement.sort_values('Improvement_%', ascending=False)
+                
+                print("\n\n--- Average Improvement of Best Methods ---")
+                print(tabulate(avg_improvement, headers=['Best Method', 'Compared To', 'Avg Improvement %'], 
+                            tablefmt='grid', floatfmt='.2f', showindex=False))
+                
+                # Overall best method (based on average rank across all metrics)
+                method_ranks = {}
+                for pattern in df_means['Pattern'].unique():
+                    pattern_data = df_means[df_means['Pattern'] == pattern]
+                    
+                    for metric in avg_metric_cols_order:
+                        if metric in higher_is_better:
+                            if higher_is_better[metric]:
+                                ranks = pattern_data[metric].rank(ascending=False)
+                            else:
+                                ranks = pattern_data[metric].rank(ascending=True)
+                            
+                            for idx, rank in enumerate(ranks):
+                                method = pattern_data.iloc[idx]['Method']
+                                method_ranks[method] = method_ranks.get(method, 0) + rank
+                
+                # Calculate average rank
+                for method in method_ranks:
+                    method_ranks[method] /= (len(avg_metric_cols_order) * len(df_means['Pattern'].unique()))
+                
+                best_overall = min(method_ranks.items(), key=lambda x: x[1])
+                print(f"\n\n--- Overall Best Method ---")
+                print(f"Best method across all metrics: {best_overall[0]} (average rank: {best_overall[1]:.2f})")
+                
+                # Save improvement data
+                improvement_csv = os.path.join(DATA_ROOT, 'method_improvements.csv')
+                improvement_df.to_csv(improvement_csv, index=False, float_format='%.2f')
+                print(f"\nImprovement data exported to '{improvement_csv}'")
+    
 
 
     except Exception as e:
