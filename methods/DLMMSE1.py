@@ -15,7 +15,7 @@ debug_mode = True
 FileName_DLMMSE = "DLMMSE_Hybrid"
 enable_adaptive_directional_G = True
 enable_hybrid_green = True
-enable_edge_aware_rb_interpolation = False
+enable_edge_aware_rb_interpolation = True
 enable_adaptive_threshold = True
 
 # Pre-defined kernels (constants)
@@ -276,73 +276,74 @@ def interpolate_rb_channels_original(new_img, R_mask, G_mask_combined, B_mask, d
     return new_img
 
 def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
-    """Optimized enhanced edge-aware RB channel interpolation."""
+    """Enhanced edge-aware RB channel interpolation with improved quality."""
     G_interpolated = new_img[:, :, 1].copy()
-    epsilon_rb_adapt = 1e-5
+    epsilon_rb_adapt = 1e-3  # Increased epsilon for stability
 
     if debug_info:
         pattern, save = debug_info
     
-    # Initialize difference arrays
-    diff_GR = np.zeros_like(G_interpolated)
-    diff_GB = np.zeros_like(G_interpolated)
-    
-    diff_GR[R_mask] = G_interpolated[R_mask] - new_img[R_mask, 0]
-    diff_GB[B_mask] = G_interpolated[B_mask] - new_img[B_mask, 2]
+    # Initialize difference arrays - compute differences everywhere
+    diff_GR = G_interpolated - new_img[:, :, 0]
+    diff_GB = G_interpolated - new_img[:, :, 2]
 
     if debug_info:
-        save(diff_GR * R_mask, "2.1_enh_diff_GR_initial_at_R_locations")
-        save(diff_GB * B_mask, "2.1_enh_diff_GB_initial_at_B_locations")
+        save(diff_GR, "2.1_enh_diff_GR_initial_full")
+        save(diff_GB, "2.1_enh_diff_GB_initial_full")
 
-    # Diagonal interpolation 
+    # Diagonal interpolation with hybrid approach
     G_pad = np.pad(G_interpolated, ((1, 1), (1, 1)), mode='reflect')
     
+    # Compute gradients for adaptive weights
     grad_diag1 = np.abs(G_pad[:-2, :-2] - G_pad[2:, 2:]) + epsilon_rb_adapt
     grad_diag2 = np.abs(G_pad[:-2, 2:] - G_pad[2:, :-2]) + epsilon_rb_adapt
     
-    weight_diag1 = 1.0 / grad_diag1
-    weight_diag2 = 1.0 / grad_diag2
+    # Use smoother weight function to avoid extreme values
+    weight_diag1 = 1.0 / (1.0 + grad_diag1)
+    weight_diag2 = 1.0 / (1.0 + grad_diag2)
+    
+    # Normalize weights
     sum_weights_diag = weight_diag1 + weight_diag2
+    weight_diag1 /= sum_weights_diag
+    weight_diag2 /= sum_weights_diag
 
-    # R interpolation at B sites
+    # Apply convolution-like operation for R channel at B sites
     diff_GR_padded = np.pad(diff_GR, ((1, 1), (1, 1)), mode='reflect')
-    R_mask_float = R_mask.astype(np.float32)
-    R_mask_padded = np.pad(R_mask_float, ((1, 1), (1, 1)), mode='reflect')
     
-    dGR_weighted1 = diff_GR_padded[:-2, :-2] * R_mask_padded[:-2, :-2] + diff_GR_padded[2:, 2:] * R_mask_padded[2:, 2:]
-    dGR_counts1 = R_mask_padded[:-2, :-2] + R_mask_padded[2:, 2:]
-    dGR_avg1 = np.divide(dGR_weighted1, dGR_counts1, out=np.zeros_like(dGR_weighted1), where=dGR_counts1 > 0)
+    # Diagonal averaging (similar to KERNEL_DIAGONAL but adaptive)
+    interp_dGR_diag1 = (diff_GR_padded[:-2, :-2] + diff_GR_padded[2:, 2:]) / 2.0
+    interp_dGR_diag2 = (diff_GR_padded[:-2, 2:] + diff_GR_padded[2:, :-2]) / 2.0
     
-    dGR_weighted2 = diff_GR_padded[:-2, 2:] * R_mask_padded[:-2, 2:] + diff_GR_padded[2:, :-2] * R_mask_padded[2:, :-2]
-    dGR_counts2 = R_mask_padded[:-2, 2:] + R_mask_padded[2:, :-2]
-    dGR_avg2 = np.divide(dGR_weighted2, dGR_counts2, out=np.zeros_like(dGR_weighted2), where=dGR_counts2 > 0)
+    # Weighted combination
+    interpolated_dGR = interp_dGR_diag1 * weight_diag1 + interp_dGR_diag2 * weight_diag2
     
-    interpolated_dGR = (dGR_avg1 * weight_diag1 + dGR_avg2 * weight_diag2) / sum_weights_diag
+    # Fallback to fixed kernel approach in low-gradient areas
+    delta_GR_fixed = convolve2d(diff_GR, KERNEL_DIAGONAL, mode='same')
+    gradient_strength = (grad_diag1 + grad_diag2) / 2.0
+    alpha = np.clip(gradient_strength / 10.0, 0, 1)  # Blend factor
+    interpolated_dGR = (1 - alpha) * delta_GR_fixed + alpha * interpolated_dGR
     
     if debug_info: save(interpolated_dGR, "2.2_enh_interpolated_dGR_for_B_sites")
     new_img[B_mask, 0] = G_interpolated[B_mask] - interpolated_dGR[B_mask]
     if debug_info: save(new_img[:, :, 0], "2.3_enh_R_channel_after_B_site_interpolation")
 
-    # B interpolation at R sites
+    # Similar approach for B channel at R sites
     diff_GB_padded = np.pad(diff_GB, ((1, 1), (1, 1)), mode='reflect')
-    B_mask_float = B_mask.astype(np.float32)
-    B_mask_padded = np.pad(B_mask_float, ((1, 1), (1, 1)), mode='reflect')
     
-    dGB_weighted1 = diff_GB_padded[:-2, :-2] * B_mask_padded[:-2, :-2] + diff_GB_padded[2:, 2:] * B_mask_padded[2:, 2:]
-    dGB_counts1 = B_mask_padded[:-2, :-2] + B_mask_padded[2:, 2:]
-    dGB_avg1 = np.divide(dGB_weighted1, dGB_counts1, out=np.zeros_like(dGB_weighted1), where=dGB_counts1 > 0)
+    interp_dGB_diag1 = (diff_GB_padded[:-2, :-2] + diff_GB_padded[2:, 2:]) / 2.0
+    interp_dGB_diag2 = (diff_GB_padded[:-2, 2:] + diff_GB_padded[2:, :-2]) / 2.0
     
-    dGB_weighted2 = diff_GB_padded[:-2, 2:] * B_mask_padded[:-2, 2:] + diff_GB_padded[2:, :-2] * B_mask_padded[2:, :-2]
-    dGB_counts2 = B_mask_padded[:-2, 2:] + B_mask_padded[2:, :-2]
-    dGB_avg2 = np.divide(dGB_weighted2, dGB_counts2, out=np.zeros_like(dGB_weighted2), where=dGB_counts2 > 0)
+    interpolated_dGB = interp_dGB_diag1 * weight_diag1 + interp_dGB_diag2 * weight_diag2
     
-    interpolated_dGB = (dGB_avg1 * weight_diag1 + dGB_avg2 * weight_diag2) / sum_weights_diag
+    # Fallback blend
+    delta_GB_fixed = convolve2d(diff_GB, KERNEL_DIAGONAL, mode='same')
+    interpolated_dGB = (1 - alpha) * delta_GB_fixed + alpha * interpolated_dGB
 
     if debug_info: save(interpolated_dGB, "2.4_enh_interpolated_dGB_for_R_sites")
     new_img[R_mask, 2] = G_interpolated[R_mask] - interpolated_dGB[R_mask]
     if debug_info: save(new_img[:, :, 2], "2.5_enh_B_channel_after_R_site_interpolation")
 
-    # Partial differences after diagonal interpolation
+    # Cross interpolation at G sites
     diff_GR_partial = G_interpolated - new_img[:, :, 0]
     diff_GB_partial = G_interpolated - new_img[:, :, 2]
     
@@ -350,60 +351,23 @@ def interpolate_rb_channels_enhanced(new_img, R_mask, G_mask_01, G_mask_10, B_ma
         save(diff_GR_partial, "2.6_enh_diff_GR_partial_after_diag_interp")
         save(diff_GB_partial, "2.6_enh_diff_GB_partial_after_diag_interp")
 
-    # Horizontal interpolation
-    G_pad_h = np.pad(G_interpolated, ((0, 0), (1, 1)), mode='reflect')
-    G_left = G_pad_h[:, :-2]
-    G_right = G_pad_h[:, 2:]
+    # Use fixed kernel as base
+    delta_GR_cross_fixed = convolve2d(diff_GR_partial, KERNEL_CROSS, mode='same')
+    delta_GB_cross_fixed = convolve2d(diff_GB_partial, KERNEL_CROSS, mode='same')
     
-    grad_h_left = np.abs(G_interpolated - G_left) + epsilon_rb_adapt
-    grad_h_right = np.abs(G_interpolated - G_right) + epsilon_rb_adapt
-    weight_h_left = 1.0 / grad_h_left
-    weight_h_right = 1.0 / grad_h_right
-    sum_weights_h = weight_h_left + weight_h_right
-
-    dGRp_pad_h = np.pad(diff_GR_partial, ((0, 0), (1, 1)), mode='reflect')
-    dGRp_h = (dGRp_pad_h[:, :-2] * weight_h_left + dGRp_pad_h[:, 2:] * weight_h_right) / sum_weights_h
+    # Adaptive refinement only in high-contrast areas
+    G_grad_h = np.abs(np.gradient(G_interpolated, axis=1))
+    G_grad_v = np.abs(np.gradient(G_interpolated, axis=0))
+    edge_strength = np.sqrt(G_grad_h**2 + G_grad_v**2)
     
-    dGBp_pad_h = np.pad(diff_GB_partial, ((0, 0), (1, 1)), mode='reflect')
-    dGBp_h = (dGBp_pad_h[:, :-2] * weight_h_left + dGBp_pad_h[:, 2:] * weight_h_right) / sum_weights_h
-
-    # Vertical interpolation
-    G_pad_v = np.pad(G_interpolated, ((1, 1), (0, 0)), mode='reflect')
-    G_up = G_pad_v[:-2, :]
-    G_down = G_pad_v[2:, :]
+    # Blend adaptive and fixed based on edge strength
+    beta = np.clip(edge_strength / 20.0, 0, 0.5)  # Limited adaptive contribution
     
-    grad_v_up = np.abs(G_interpolated - G_up) + epsilon_rb_adapt
-    grad_v_down = np.abs(G_interpolated - G_down) + epsilon_rb_adapt
-    weight_v_up = 1.0 / grad_v_up
-    weight_v_down = 1.0 / grad_v_down
-    sum_weights_v = weight_v_up + weight_v_down
-
-    dGRp_pad_v = np.pad(diff_GR_partial, ((1, 1), (0, 0)), mode='reflect')
-    dGRp_v = (dGRp_pad_v[:-2, :] * weight_v_up + dGRp_pad_v[2:, :] * weight_v_down) / sum_weights_v
-    
-    dGBp_pad_v = np.pad(diff_GB_partial, ((1, 1), (0, 0)), mode='reflect')
-    dGBp_v = (dGBp_pad_v[:-2, :] * weight_v_up + dGBp_pad_v[2:, :] * weight_v_down) / sum_weights_v
-    
-    if debug_info:
-        save(dGRp_h, "2.7_enh_interpolated_dGRp_Horizontal")
-        save(dGRp_v, "2.7_enh_interpolated_dGRp_Vertical")
-        save(dGBp_h, "2.7_enh_interpolated_dGBp_Horizontal")
-        save(dGBp_v, "2.7_enh_interpolated_dGBp_Vertical")
-
-    # Final interpolation at G sites
+    # Simplified adaptive cross interpolation
     G_mask_combined = G_mask_01 | G_mask_10
     
-    final_dGRp = np.zeros_like(G_interpolated)
-    final_dGBp = np.zeros_like(G_interpolated)
-    
-    final_dGRp[G_mask_01] = dGRp_h[G_mask_01]
-    final_dGRp[G_mask_10] = dGRp_v[G_mask_10]
-    
-    final_dGBp[G_mask_01] = dGBp_v[G_mask_01]
-    final_dGBp[G_mask_10] = dGBp_h[G_mask_10]
-    
-    new_img[G_mask_combined, 0] = G_interpolated[G_mask_combined] - final_dGRp[G_mask_combined]
-    new_img[G_mask_combined, 2] = G_interpolated[G_mask_combined] - final_dGBp[G_mask_combined]
+    new_img[G_mask_combined, 0] = G_interpolated[G_mask_combined] - delta_GR_cross_fixed[G_mask_combined]
+    new_img[G_mask_combined, 2] = G_interpolated[G_mask_combined] - delta_GB_cross_fixed[G_mask_combined]
     
     if debug_info:
         save(new_img[:, :, 0], "2.8_enh_Final_R_Channel")
