@@ -11,7 +11,8 @@ import cv2
 import warnings
 
 
-
+Debug_FolderName = "DLMMSE1"  # Default prefix
+Debug_FileName = "RGGB"  # Default prefix
 debug_mode = True
 # Bayer pattern slicing dictionary - defined once for all supported patterns
 PATTERN_SLICES = {
@@ -310,28 +311,32 @@ def calculate_metrics(raw_img_input: np.ndarray, new_img_input: np.ndarray) -> d
 
     return results
 
-def update_filename(pattern):
+def update_filename(prefix: str):
     """Updates the filename prefix for debug image saves."""
-    global FileName_DLMMSE
-    FileName_DLMMSE = pattern
+    global Debug_FileName
+    Debug_FileName = prefix
 
-def save_image(image, stage_name, pattern=None, is_mask=False):
+def save_image(image, stage_name: str, pattern: str = None, is_mask: bool = False):
     """Saves an image or mask as a PNG file if debug_mode is enabled."""
-    global FileName_DLMMSE
+    global Debug_FileName
     if not debug_mode:
         return
-    foldername = os.path.join("Data/DLMMSE1/")
+    foldername = os.path.join("Data", Debug_FolderName)
     os.makedirs(foldername, exist_ok=True)
     
     if is_mask:
         image_to_save = (image * 255).astype(np.uint8)
-        filename = f"{FileName_DLMMSE}_{stage_name}"
+        filename = f"{Debug_FileName}_{stage_name}"
         if pattern:
-            filename = f"{FileName_DLMMSE}_{pattern}_{stage_name}"
-        filename += "_mask.png"
+            filename = f"{Debug_FileName}_{pattern}_{stage_name}_mask.png"
+        else:
+            filename += "_mask.png"
     else:
         image_to_save = image.clip(0, 255).astype(np.uint8)
-        filename = f"{FileName_DLMMSE}_{stage_name}.png"
+        filename = f"{Debug_FileName}_{stage_name}.png"
+        if pattern:
+            filename = f"{Debug_FileName}_{pattern}_{stage_name}.png"
+    
     full_path = os.path.join(foldername, filename)
     try:
         if image_to_save.ndim in (2, 3):
@@ -340,7 +345,6 @@ def save_image(image, stage_name, pattern=None, is_mask=False):
             print(f"Warning: Cannot save image '{filename}' with unexpected shape {image_to_save.shape}")
     except Exception as e:
         print(f"Error saving debug image {full_path}: {e}")
-
 def create_bayer_masks(height, width, pattern):
     """Create binary masks for R, G, and B pixel locations based on Bayer pattern."""
     pattern = pattern.upper()

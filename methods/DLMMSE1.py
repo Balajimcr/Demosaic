@@ -11,12 +11,13 @@ except ImportError:
     from methods.Utils import create_bayer_masks, update_filename, save_image
 
 # Global configurations
-debug_mode = True
+debug_mode = False
 FileName_DLMMSE = "DLMMSE_Hybrid"
 enable_adaptive_directional_G = True
 enable_hybrid_green = True
 enable_edge_aware_rb_interpolation = True
 enable_adaptive_threshold = True
+enable_green_channel_GBTF_interpolation = True
 
 # Pre-defined kernels (constants)
 KERNEL_1D_HV = np.array([-1, 2, 2, 2, -1], dtype=np.float32) / 4.0
@@ -70,6 +71,124 @@ def compute_local_gradient_statistics(image, window_size=7):
     np.clip(adaptive_threshold, 10.0, 100.0, out=adaptive_threshold)
     
     return adaptive_threshold
+
+def interpolate_green_channel_GBTF(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
+    """Green channel interpolation using GBTF method."""
+    R, G, B = new_img[:, :, 0], new_img[:, :, 1], new_img[:, :, 2]
+    S = R + G + B
+    
+    if debug_info:
+        pattern, save = debug_info
+        save(S, "1.0_S_sum_of_channels")
+    
+    # GBTF Step 1: Interpolate using GBTF kernel
+    INTERP_KERNEL_1D = np.array([-1, 2, 2, 2, -1], dtype=np.float32) / 4.0
+    
+    H_interpolated = convolve1d(S, INTERP_KERNEL_1D, axis=1, mode='reflect')
+    V_interpolated = convolve1d(S, INTERP_KERNEL_1D, axis=0, mode='reflect')
+    
+    # Create temporary channels based on interpolation (GBTF style)
+    G_H, R_H, B_H = G.copy(), R.copy(), B.copy()
+    G_V, R_V, B_V = G.copy(), R.copy(), B.copy()
+    
+    # Update specific locations based on GBTF pattern
+    # For GBTF's pattern (assumes RGGB):
+    # G at (even,even) and (odd,odd) - where R and B are located
+    G_H[0::2, 0::2] = H_interpolated[0::2, 0::2]  # G at R locations
+    G_H[1::2, 1::2] = H_interpolated[1::2, 1::2]  # G at B locations
+    G_V[0::2, 0::2] = V_interpolated[0::2, 0::2]
+    G_V[1::2, 1::2] = V_interpolated[1::2, 1::2]
+    
+    # R/B updates for delta computation
+    R_H[0::2, 1::2] = H_interpolated[0::2, 1::2]  # R at some G locations
+    B_H[1::2, 0::2] = H_interpolated[1::2, 0::2]  # B at other G locations
+    R_V[1::2, 0::2] = V_interpolated[1::2, 0::2]
+    B_V[0::2, 1::2] = V_interpolated[0::2, 1::2]
+    
+    # GBTF Step 2: Compute deltas
+    delta_H = G_H - R_H - B_H
+    delta_V = G_V - R_V - B_V
+    
+    # GBTF Step 3: Gradient calculation  
+    GRAD_KERNEL_1D = np.array([-1, 0, 1], dtype=np.float32)
+    D_H = np.abs(convolve1d(delta_H, GRAD_KERNEL_1D, axis=1, mode='reflect'))
+    D_V = np.abs(convolve1d(delta_V, GRAD_KERNEL_1D, axis=0, mode='reflect'))
+    
+    # GBTF Step 4: Directional weights (using GBTF's exact kernels)
+    WEIGHT_EPSILON = 1e-10
+    
+    KERNEL_W_W_2D = np.zeros((9, 9), dtype=np.float32)
+    KERNEL_W_W_2D[2:7, 0:5] = 1.0
+    KERNEL_W_E_2D = np.zeros((9, 9), dtype=np.float32)
+    KERNEL_W_E_2D[2:7, 4:9] = 1.0
+    KERNEL_W_N_2D = np.zeros((9, 9), dtype=np.float32)
+    KERNEL_W_N_2D[0:5, 2:7] = 1.0
+    KERNEL_W_S_2D = np.zeros((9, 9), dtype=np.float32)
+    KERNEL_W_S_2D[4:9, 2:7] = 1.0
+    
+    # Compute weights
+    W_W = convolve2d(D_H, KERNEL_W_W_2D, mode='same', boundary='fill', fillvalue=0.0)
+    W_E = convolve2d(D_H, KERNEL_W_E_2D, mode='same', boundary='fill', fillvalue=0.0)
+    W_N = convolve2d(D_V, KERNEL_W_N_2D, mode='same', boundary='fill', fillvalue=0.0)
+    W_S = convolve2d(D_V, KERNEL_W_S_2D, mode='same', boundary='fill', fillvalue=0.0)
+    
+    # Process weights
+    W_W[W_W == 0] = WEIGHT_EPSILON; W_W = 1.0 / np.square(W_W)
+    W_E[W_E == 0] = WEIGHT_EPSILON; W_E = 1.0 / np.square(W_E)
+    W_N[W_N == 0] = WEIGHT_EPSILON; W_N = 1.0 / np.square(W_N)
+    W_S[W_S == 0] = WEIGHT_EPSILON; W_S = 1.0 / np.square(W_S)
+    
+    W_T = W_W + W_E + W_N + W_S
+    
+    # GBTF Step 5: Final delta computation
+    F_COEFFS_1D = np.full(5, 0.2, dtype=np.float32)
+    KERNEL_F_FORWARD_1D = np.zeros(9, dtype=np.float32)
+    KERNEL_F_FORWARD_1D[0:5] = F_COEFFS_1D
+    KERNEL_F_BACKWARD_1D = np.zeros(9, dtype=np.float32)
+    KERNEL_F_BACKWARD_1D[4:9] = F_COEFFS_1D[::-1]
+    
+    # Process for c=0 pattern (corresponds to G-R estimation)
+    delta_H_c0 = np.zeros_like(delta_H)
+    delta_V_c0 = np.zeros_like(delta_V)
+    delta_H_c0[0::2, :] = delta_H[0::2, :]
+    delta_V_c0[:, 0::2] = delta_V[:, 0::2]
+    
+    V1_N = convolve1d(delta_V_c0, KERNEL_F_FORWARD_1D, axis=0, mode='reflect')
+    V2_S = convolve1d(delta_V_c0, KERNEL_F_BACKWARD_1D, axis=0, mode='reflect')
+    V3_E = convolve1d(delta_H_c0, KERNEL_F_FORWARD_1D, axis=1, mode='reflect')
+    V4_W = convolve1d(delta_H_c0, KERNEL_F_BACKWARD_1D, axis=1, mode='reflect')
+    
+    delta_GR = (V1_N * W_N + V2_S * W_S + V3_E * W_E + V4_W * W_W) / W_T
+    
+    # Process for c=1 pattern (corresponds to G-B estimation)
+    delta_H_c1 = np.zeros_like(delta_H)
+    delta_V_c1 = np.zeros_like(delta_V)
+    delta_H_c1[1::2, :] = delta_H[1::2, :]
+    delta_V_c1[:, 1::2] = delta_V[:, 1::2]
+    
+    V1_N = convolve1d(delta_V_c1, KERNEL_F_FORWARD_1D, axis=0, mode='reflect')
+    V2_S = convolve1d(delta_V_c1, KERNEL_F_BACKWARD_1D, axis=0, mode='reflect')
+    V3_E = convolve1d(delta_H_c1, KERNEL_F_FORWARD_1D, axis=1, mode='reflect')
+    V4_W = convolve1d(delta_H_c1, KERNEL_F_BACKWARD_1D, axis=1, mode='reflect')
+    
+    delta_GB = (V1_N * W_N + V2_S * W_S + V3_E * W_E + V4_W * W_W) / W_T
+    
+    # GBTF Step 6: Recover G channel
+    # Update G at R locations (0::2, 0::2)
+    new_img[0::2, 0::2, 1] = new_img[0::2, 0::2, 0] + delta_GR[0::2, 0::2]
+    # Update G at B locations (1::2, 1::2)  
+    new_img[1::2, 1::2, 1] = new_img[1::2, 1::2, 2] + delta_GB[1::2, 1::2]
+    
+    if debug_info:
+        save(delta_H, "1.1_delta_H_GBTF")
+        save(delta_V, "1.1_delta_V_GBTF")
+        save(D_H, "1.2_gradient_H")
+        save(D_V, "1.2_gradient_V")
+        save(delta_GR, "1.3_delta_GR")
+        save(delta_GB, "1.3_delta_GB")
+        save(new_img[:, :, 1], "1.6_Final_G_Channel_Interpolated")
+    
+    return new_img
 
 def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
     """Optimized green channel interpolation."""
@@ -404,7 +523,10 @@ def run(img, pattern='RGGB'):
         save_dbg_func(new_img_float[:, :, 1] * G_mask_combined, "0.2_initial_G_channel_masked")
         save_dbg_func(new_img_float[:, :, 2] * B_mask, "0.2_initial_B_channel_masked")
     
-    new_img_float = interpolate_green_channel(new_img_float, R_mask, G_mask_01, G_mask_10, B_mask, debug_info_tuple)
+    if enable_green_channel_GBTF_interpolation:
+        new_img_float = interpolate_green_channel_GBTF(new_img_float, R_mask, G_mask_01, G_mask_10, B_mask, debug_info_tuple)
+    else:
+        new_img_float = interpolate_green_channel(new_img_float, R_mask, G_mask_01, G_mask_10, B_mask, debug_info_tuple)
     
     if enable_edge_aware_rb_interpolation:
         if debug_mode: print("Using Enhanced Edge-Aware RB Interpolation (Optimized).")
