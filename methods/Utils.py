@@ -328,14 +328,14 @@ def save_image(image, stage_name: str, pattern: str = None, is_mask: bool = Fals
         image_to_save = (image * 255).astype(np.uint8)
         filename = f"{Debug_FileName}_{stage_name}"
         if pattern:
-            filename = f"{Debug_FileName}_{pattern}_{stage_name}_mask.png"
+            filename = f"{Debug_FileName}_{stage_name}_mask.png"
         else:
             filename += "_mask.png"
     else:
         image_to_save = image.clip(0, 255).astype(np.uint8)
         filename = f"{Debug_FileName}_{stage_name}.png"
         if pattern:
-            filename = f"{Debug_FileName}_{pattern}_{stage_name}.png"
+            filename = f"{Debug_FileName}_{stage_name}.png"
     
     full_path = os.path.join(foldername, filename)
     try:
