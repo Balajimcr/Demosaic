@@ -8,7 +8,7 @@ import concurrent.futures
 from functools import partial
 
 from methods.Utils import create_directories, dump_gt_channels, clear_directory, load_image, make_bayer, calculate_metrics
-from methods import DLMMSE, DLMMSE1
+from methods import DLMMSE, DLMMSE1,GBTF,HA,HQL,Bilinear,RI,MLRI,IRI
 
 
 # --- Global constants ---
@@ -28,6 +28,23 @@ DESIRED_METRIC_ORDER = [
     'CNR_Cb_Var', 'CNR_Cr_Var', # Added CNR metrics
     'Edge_IoU', 'Zipper_StdLap'
 ]
+
+# Wrapper function for GBTF to match the expected interface
+def GBTF_wrapper(img, pattern=None):
+    return GBTF.run(img)
+
+def HA_wrapper(img, pattern=None):
+    return HA.run(img)
+def HQL_wrapper(img, pattern=None):
+    return HQL.run(img)
+def Bilinear_wrapper(img, pattern=None):
+    return Bilinear.run(img)
+def RI_wrapper(img, pattern=None):
+    return RI.run(img)
+def MLRI_wrapper(img, pattern=None):
+    return MLRI.run(img)
+def IRI_wrapper(img, pattern=None):
+    return IRI.run(img)
 
 def clear_output_directories(verbose: bool = False):
     """Clear all output directories managed by this script (keeps input)."""
@@ -191,8 +208,15 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
 
     methods_to_run = [
         ('DLMMSE', DLMMSE.run),
-        ('DLMMSE1', DLMMSE1.run)
-        # Add other methods here as tuples ('MethodName', method_function)
+        ('DLMMSE1', DLMMSE1.run),
+        ('GBTF', GBTF_wrapper),
+        #('HA', HA_wrapper),
+        #('HQL', HQL_wrapper),
+        #('Bilinear', Bilinear_wrapper),
+        #('RI', RI_wrapper),
+        #('MLRI', MLRI_wrapper),
+        #('IRI', IRI_wrapper),
+        #('GBTF', GBTF_wrapper),                
     ]
     print(f"Using methods: {[name for name, func in methods_to_run]}")
 
