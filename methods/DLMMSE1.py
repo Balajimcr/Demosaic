@@ -13,7 +13,7 @@ except ImportError:
     from methods.Utils import create_bayer_masks, update_filename, save_image
 
 # Global configurations
-debug_mode = False
+debug_mode = True
 FileName_DLMMSE = "DLMMSE_Hybrid"
 enable_adaptive_directional_G = True
 enable_hybrid_green = True
@@ -44,6 +44,19 @@ def debug_save(debug_info, data, name):
         _, save = debug_info
         save(data, name)
 
+import numpy as np
+from scipy.signal import convolve2d
+from scipy.ndimage import convolve1d
+
+# Pre-defined kernels (constants)
+KERNEL_1D_HV = np.array([-1, 2, 2, 2, -1], dtype=np.float32) / 4.0
+WEIGHT_EPSILON = 1e-10
+
+def debug_save(debug_info, data, name):
+    """Save debug image if debug_info is provided."""
+    if debug_info:
+        _, save = debug_info
+        save(data, name)
 
 def create_gbtf_weight_kernels():
     """Create GBTF weight kernels."""
@@ -67,24 +80,24 @@ def create_gbtf_weight_kernels():
     
     return kernels
 
-
 def process_gbtf_weights(D_H, D_V, weight_kernels):
-    """Process GBTF directional weights."""
-    # Compute weights
+    """Process GBTF directional weights with minimal modifications."""
+    # Compute weights (original GBTF approach)
     W_W = convolve2d(D_H, weight_kernels['W_W'], mode='same', boundary='fill', fillvalue=0.0)
     W_E = convolve2d(D_H, weight_kernels['W_E'], mode='same', boundary='fill', fillvalue=0.0)
     W_N = convolve2d(D_V, weight_kernels['W_N'], mode='same', boundary='fill', fillvalue=0.0)
     W_S = convolve2d(D_V, weight_kernels['W_S'], mode='same', boundary='fill', fillvalue=0.0)
     
-    # Process weights
+    # Process weights - slight modification for robustness in smooth regions
     for W in [W_W, W_E, W_N, W_S]:
-        W[W == 0] = WEIGHT_EPSILON
-        W[:] = 1.0 / np.square(W)
+        # Add small adaptive epsilon based on local gradient magnitude
+        local_eps = WEIGHT_EPSILON * (1 + 0.1 * np.mean(D_H + D_V))
+        W[W == 0] = local_eps
+        W[:] = 1.0 / np.square(W + local_eps)
     
     W_T = W_W + W_E + W_N + W_S
     
     return W_W, W_E, W_N, W_S, W_T
-
 
 def compute_gbtf_delta(delta_pattern, pattern_indices, weight_data):
     """Compute GBTF delta for specific pattern."""
@@ -116,9 +129,8 @@ def compute_gbtf_delta(delta_pattern, pattern_indices, weight_data):
     
     return (V1_N * W_N + V2_S * W_S + V3_E * W_E + V4_W * W_W) / W_T
 
-
 def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, debug_info=None):
-    """Green channel interpolation using GBTF method."""
+    """Improved green channel interpolation using refined GBTF method."""
     R, G, B = new_img[:, :, 0], new_img[:, :, 1], new_img[:, :, 2]
     S = R + G + B
     
@@ -151,15 +163,21 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     debug_save(debug_info, delta_H, "1.1_delta_H_GBTF")
     debug_save(debug_info, delta_V, "1.1_delta_V_GBTF")
     
-    # GBTF Step 3: Gradient calculation
+    # GBTF Step 3: Gradient calculation with slight smoothing for robustness
     GRAD_KERNEL_1D = np.array([-1, 0, 1], dtype=np.float32)
-    D_H = np.abs(convolve1d(delta_H, GRAD_KERNEL_1D, axis=1, mode='reflect'))
-    D_V = np.abs(convolve1d(delta_V, GRAD_KERNEL_1D, axis=0, mode='reflect'))
+    
+    # Apply minimal smoothing to delta before gradient to reduce noise
+    smooth_kernel = np.array([0.25, 0.5, 0.25], dtype=np.float32)
+    delta_H_smooth = convolve1d(delta_H, smooth_kernel, axis=1, mode='reflect')
+    delta_V_smooth = convolve1d(delta_V, smooth_kernel, axis=0, mode='reflect')
+    
+    D_H = np.abs(convolve1d(delta_H_smooth, GRAD_KERNEL_1D, axis=1, mode='reflect'))
+    D_V = np.abs(convolve1d(delta_V_smooth, GRAD_KERNEL_1D, axis=0, mode='reflect'))
     
     debug_save(debug_info, D_H, "1.2_gradient_H")
     debug_save(debug_info, D_V, "1.2_gradient_V")
     
-    # GBTF Step 4: Directional weights
+    # GBTF Step 4: Directional weights with slight modification
     weight_kernels = create_gbtf_weight_kernels()
     W_W, W_E, W_N, W_S, W_T = process_gbtf_weights(D_H, D_V, weight_kernels)
     
@@ -169,8 +187,24 @@ def interpolate_green_channel(new_img, R_mask, G_mask_01, G_mask_10, B_mask, deb
     # Process for c=0 pattern (G-R estimation)
     delta_GR = compute_gbtf_delta((delta_H, delta_V), (0,), weight_data)
     
-    # Process for c=1 pattern (G-B estimation)
+    # Process for c=1 pattern (G-B estimation)  
     delta_GB = compute_gbtf_delta((delta_H, delta_V), (1,), weight_data)
+    
+    # Apply minimal post-processing to reduce checkerboard in very flat regions
+    # Detect very smooth regions
+    local_variance = convolve2d(np.abs(S - np.mean(S)), np.ones((3,3))/9, mode='same')
+    very_smooth = local_variance < 0.5  # Very conservative threshold
+    
+    if np.any(very_smooth):
+        # Apply mild smoothing only to delta values in very smooth regions
+        smooth_kernel_2d = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]]) / 16.0
+        delta_GR_smooth = convolve2d(delta_GR, smooth_kernel_2d, mode='same')
+        delta_GB_smooth = convolve2d(delta_GB, smooth_kernel_2d, mode='same')
+        
+        # Blend only in very smooth regions
+        alpha = 0.3  # Conservative blend factor
+        delta_GR[very_smooth] = (1-alpha) * delta_GR[very_smooth] + alpha * delta_GR_smooth[very_smooth]
+        delta_GB[very_smooth] = (1-alpha) * delta_GB[very_smooth] + alpha * delta_GB_smooth[very_smooth]
     
     debug_save(debug_info, delta_GR, "1.3_delta_GR")
     debug_save(debug_info, delta_GB, "1.3_delta_GB")
