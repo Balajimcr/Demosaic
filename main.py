@@ -8,7 +8,7 @@ import concurrent.futures
 from functools import partial
 
 from methods.Utils import create_directories, dump_gt_channels, clear_directory, load_image, make_bayer, calculate_metrics,debug_mode
-from methods import DLMMSE, DLMMSE1, GBTF, HA, HQL, Bilinear, RI, MLRI, IRI
+from methods import DLMMSE, DLMMSE1, GBTF, HA, HQL, Bilinear, RI, MLRI, IRI, Malvar, menon
 
 # --- Global constants ---
 DATA_ROOT = "Data"
@@ -45,6 +45,7 @@ def MLRI_wrapper(img, pattern=None):
 def IRI_wrapper(img, pattern=None):
     return IRI.run(img)
 
+
 def clear_output_directories(verbose: bool = False):
     """Clear all output directories managed by this script (keeps input)."""
     if verbose:
@@ -54,6 +55,15 @@ def clear_output_directories(verbose: bool = False):
         DIFFERENCE_DIR,
         os.path.join("Data", "DLMMSE"),
         os.path.join("Data", "DLMMSE1"),
+        os.path.join("Data", "GBTF"),
+        # os.path.join("Data", "HA"),
+        # os.path.join("Data", "HQL"),
+        # os.path.join("Data", "Bilinear"),
+        # os.path.join("Data", "RI"),
+        # os.path.join("Data", "MLRI"),
+        # os.path.join("Data", "IRI"),
+        os.path.join("Data", "Malvar"),
+        os.path.join("Data", "Menon"),
     ]
     for dir_path in dirs_to_clear:
         if os.path.exists(dir_path):
@@ -157,6 +167,14 @@ def process_images(patterns: list = None, parallel: bool = True, max_workers: in
         ('DLMMSE', DLMMSE.run),
         ('DLMMSE1', DLMMSE1.run),
         ('GBTF', GBTF.run),
+        # ('HA', HA.run),
+        # ('HQL', HQL.run),
+        # ('Bilinear', Bilinear.run),
+        # ('RI', RI.run),
+        # ('MLRI', MLRI.run),
+        # ('IRI', IRI.run),
+        ('Malvar', Malvar.run),
+        ('Menon', menon.run),
     ]
     print(f"Using methods: {[name for name, func in methods_to_run]}")
     tasks = []
