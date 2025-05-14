@@ -4,7 +4,7 @@ import os
 import imageio
 
 # Global configurations
-debug_mode = True
+debug_mode = False
 FileName_Malvar = "Malvar"  # Default filename prefix
 
 # --- Algorithmic Constants ---

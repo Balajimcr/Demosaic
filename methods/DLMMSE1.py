@@ -13,7 +13,7 @@ except ImportError:
     from methods.Utils import create_bayer_masks, update_filename, save_image
 
 # Global configurations
-debug_mode = True
+debug_mode = False
 FileName_DLMMSE = "DLMMSE_Hybrid"
 enable_adaptive_directional_G = True
 enable_hybrid_green = True

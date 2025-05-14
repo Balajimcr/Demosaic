@@ -87,14 +87,29 @@ def save_difference_images(gt_img: np.ndarray, demosaiced_img: np.ndarray, base_
         diff_r = cv2.absdiff(gt_bgr[:,:,2], demosaiced_bgr[:,:,2])
         abs_diff_bgr = cv2.absdiff(gt_bgr, demosaiced_bgr)
         overall_diff_magnitude = np.max(abs_diff_bgr, axis=2)
+        
+        # Convert to 8-bit for visualization
         diff_r_8bit = cv2.convertScaleAbs(diff_r)
         diff_g_8bit = cv2.convertScaleAbs(diff_g)
         diff_b_8bit = cv2.convertScaleAbs(diff_b)
         overall_diff_8bit = cv2.convertScaleAbs(overall_diff_magnitude)
+        
+        # Create color mapped versions for better visualization
+        diff_r_color = cv2.applyColorMap(diff_r_8bit, cv2.COLORMAP_JET)
+        diff_g_color = cv2.applyColorMap(diff_g_8bit, cv2.COLORMAP_JET)
+        diff_b_color = cv2.applyColorMap(diff_b_8bit, cv2.COLORMAP_JET)
+        overall_diff_color = cv2.applyColorMap(overall_diff_8bit, cv2.COLORMAP_JET)
+        
+        # Save both grayscale and color mapped versions
         cv2.imwrite(os.path.join(task_diff_dir, "R_channel_diff.png"), diff_r_8bit)
         cv2.imwrite(os.path.join(task_diff_dir, "G_channel_diff.png"), diff_g_8bit)
         cv2.imwrite(os.path.join(task_diff_dir, "B_channel_diff.png"), diff_b_8bit)
         cv2.imwrite(os.path.join(task_diff_dir, "Overall_diff.png"), overall_diff_8bit)
+        
+        cv2.imwrite(os.path.join(task_diff_dir, "R_channel_diff_color.png"), diff_r_color)
+        cv2.imwrite(os.path.join(task_diff_dir, "G_channel_diff_color.png"), diff_g_color)
+        cv2.imwrite(os.path.join(task_diff_dir, "B_channel_diff_color.png"), diff_b_color)
+        cv2.imwrite(os.path.join(task_diff_dir, "Overall_diff_color.png"), overall_diff_color)
     except Exception as e:
         print(f"\nERROR saving difference images for {base_filename}_{method_name}_{pattern}: {type(e).__name__} - {e}")
 
@@ -131,7 +146,7 @@ def process_image_pattern(task_args, save_files: bool = True):
         print(f"\nERROR processing '{os.path.basename(file_path)}' with {method_name} ({pattern}): {type(e).__name__} - {e}")
         return None
 
-def process_images(patterns: list = None, parallel: bool = True, max_workers: int = None, save_files: bool = True):
+def process_images(patterns: list = None, parallel: bool = True, max_workers: int = None, save_files: bool = False):
     """
     Process images with multiple Bayer patterns and demosaicing methods and report metrics.
 

@@ -6,7 +6,7 @@ import imageio
 import cv2
 
 # Global configurations
-debug_mode = True
+debug_mode = False
 FileName_DLMMSE = "DLMMSE"  # Default filename prefix
 
 # Pre-define commonly used kernels

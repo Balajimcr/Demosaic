@@ -4,7 +4,7 @@ import os
 import imageio
 
 # Global configurations
-debug_mode = True
+debug_mode = False
 FileName_Menon = "Menon"  # Default filename prefix
 
 # --- Algorithmic Constants ---
